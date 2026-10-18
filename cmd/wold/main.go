@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"wol/internal/auth"
 	"wol/internal/config"
 	"wol/internal/httpapi"
 	"wol/internal/probe"
@@ -62,15 +63,24 @@ func run() error {
 	waker := wol.NewService()
 	runner := probe.NewRunner(ctx, db, logger)
 
+	authn, err := auth.New(cfg.AdminPassword, cfg.TokenTTL)
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           httpapi.New(db, db, waker, runner, db, logger, "web").Routes(),
+		Handler:           httpapi.New(db, db, waker, runner, db, authn, logger, "web").Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("服务启动", "addr", srv.Addr, "data_dir", cfg.DataDir)
+		logger.Info("服务启动",
+			"addr", srv.Addr,
+			"data_dir", cfg.DataDir,
+			"token_ttl", cfg.TokenTTL.String(), // 只记有效期，不记口令
+		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

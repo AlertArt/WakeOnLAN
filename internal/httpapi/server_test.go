@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,8 +14,8 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
 func newTestServer(dbErr error) http.Handler {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fakePinger{err: dbErr}, newFakeDeviceStore(), &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes()
+	h := New(fakePinger{err: dbErr}, newFakeDeviceStore(), &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes()
+	return withTestToken(h)
 }
 
 func TestHealthOK(t *testing.T) {

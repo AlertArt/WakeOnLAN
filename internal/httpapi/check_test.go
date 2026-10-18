@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,8 +102,7 @@ func newCheckTestServer(t *testing.T) checkFixture {
 
 	checker := &fakeChecker{}
 	status := newFakeStatusStore()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := New(fakePinger{}, fs, &fakeWaker{}, checker, status, logger, "../../web").Routes()
+	h := withTestToken(New(fakePinger{}, fs, &fakeWaker{}, checker, status, testAuthn, newTestLogger(), "../../web").Routes())
 	return checkFixture{handler: h, devices: fs, checker: checker, status: status}
 }
 

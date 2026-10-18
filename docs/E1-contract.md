@@ -145,6 +145,6 @@ DELETE /api/devices/{id}
 | --- | --- |
 | 唤醒接口 `POST /api/devices/{id}/wake` | E2，契约见 `docs/E2-contract.md` |
 | 触发校验 `POST /api/devices/{id}/check`、状态查询 `GET /api/status` | E3，契约见 `docs/E3-contract.md` |
-| 认证头 `Authorization` | E4 |
+| 认证头 `Authorization` | E4，契约见 `docs/E4-contract.md`（本契约的路径与字段不变，仅外层加令牌校验） |
 | 分页、排序、搜索参数 | 二期 |
 | 软删除、回收站 | 不在范围内 |

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"wol/internal/auth"
 	"wol/internal/store"
 )
 
@@ -34,18 +35,20 @@ type Server struct {
 	waker    Waker
 	checker  Checker
 	statuses StatusStore
+	auth     *auth.Authenticator
 	logger   *slog.Logger
 	webDir   string
 }
 
 // New 构造 Server。
-func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses StatusStore, logger *slog.Logger, webDir string) *Server {
+func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses StatusStore, authn *auth.Authenticator, logger *slog.Logger, webDir string) *Server {
 	return &Server{
 		db:       db,
 		devices:  devices,
 		waker:    waker,
 		checker:  checker,
 		statuses: statuses,
+		auth:     authn,
 		logger:   logger,
 		webDir:   webDir,
 	}
@@ -55,23 +58,32 @@ func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// 健康检查：Docker HEALTHCHECK 与 E7 验收 7-1 依赖此路径。
+	// 公开路径：健康检查必须免鉴权，否则容器 HEALTHCHECK 永远失败（E4 禁止事项 8）。
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+
+	// guard 把受保护接口包上令牌校验。逐条登记而非按前缀拦截，
+	// 好处是"哪些接口公开"在路由表上一眼可见，不依赖路径匹配的隐含规则。
+	guard := func(h http.HandlerFunc) http.Handler { return s.requireAuth(h) }
 
 	// F1 设备管理：四条路由对应 docs/E1-contract.md 的四个接口。
-	mux.HandleFunc("GET /api/devices", s.handleListDevices)
-	mux.HandleFunc("POST /api/devices", s.handleCreateDevice)
-	mux.HandleFunc("PUT /api/devices/{id}", s.handleUpdateDevice)
-	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
+	mux.Handle("GET /api/devices", guard(s.handleListDevices))
+	mux.Handle("POST /api/devices", guard(s.handleCreateDevice))
+	mux.Handle("PUT /api/devices/{id}", guard(s.handleUpdateDevice))
+	mux.Handle("DELETE /api/devices/{id}", guard(s.handleDeleteDevice))
 
 	// F2 一键唤醒：接口契约见 docs/E2-contract.md。
-	mux.HandleFunc("POST /api/devices/{id}/wake", s.handleWakeDevice)
+	mux.Handle("POST /api/devices/{id}/wake", guard(s.handleWakeDevice))
 
 	// F3 唤醒校验：接口契约见 docs/E3-contract.md。
-	mux.HandleFunc("POST /api/devices/{id}/check", s.handleStartCheck)
-	mux.HandleFunc("GET /api/status", s.handleListStatus)
+	mux.Handle("POST /api/devices/{id}/check", guard(s.handleStartCheck))
+	mux.Handle("GET /api/status", guard(s.handleListStatus))
 
-	// 静态资源：E0 仅一个占位页，前端页面由 E5 在此目录内新增。
+	// F5 登出：吊销当前令牌。登录见上方公开路径。
+	mux.Handle("POST /api/logout", guard(s.handleLogout))
+
+	// 静态资源：登录页需要先加载出来才能输入口令，因此保持公开。
+	// 页面内不含任何设备数据，数据一律走受保护的 /api/。
 	mux.Handle("/", http.FileServer(http.Dir(s.webDir)))
 
 	return s.withRequestLog(mux)

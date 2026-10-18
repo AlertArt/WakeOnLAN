@@ -2,32 +2,43 @@
 
 单用户、自用的局域网唤醒服务：录入设备 → 点一下 → 发送 WOL 魔术包 → 用 Ping / TCP 端口探测给出"已上线 / 超时未响应"的明确结论。移动端为响应式 Web + PWA，部署为单容器 + 单文件 SQLite。
 
-> 当前处于 **E3 环节：唤醒校验与状态轮询**（已放行）。设备 CRUD、一键唤醒、异步校验与状态查询均可用；前端页面与鉴权尚未实现。
+> 当前处于 **E4 环节：认证与接口保护**（已放行）。设备 CRUD、一键唤醒、异步校验、令牌鉴权均可用；前端页面尚未实现。
 
 ## 快速开始（本地）
 
 ```bash
 # 需要 Go 1.24+
-WOL_DATA_DIR=./tmp/data WOL_PORT=8080 go run ./cmd/wold
+# 口令必填，服务不会以空口令启动
+WOL_ADMIN_PASSWORD='换成你自己的口令' WOL_DATA_DIR=./tmp/data WOL_PORT=8080 go run ./cmd/wold
 
-# 验证
+# 健康检查是唯一免鉴权的接口（容器探活用）
 curl -s http://127.0.0.1:8080/api/health
 # {"status":"ok","db":"ok","time":"..."}
 
-# 设备接口
+# 登录拿令牌（默认 7 天有效）
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"换成你自己的口令"}' | sed -E 's/.*"token":"([^"]+)".*/\1/')
+# {"token":"...","expires_at":"..."}
+
+# 其余接口都要带 Authorization: Bearer
 curl -s -X POST http://127.0.0.1:8080/api/devices \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"name":"书房主机","mac":"AA:BB:CC:DD:EE:FF","broadcast_addr":"192.168.1.255","probe_type":"ping","probe_value":"192.168.1.10"}'
-curl -s http://127.0.0.1:8080/api/devices
+curl -s http://127.0.0.1:8080/api/devices -H "Authorization: Bearer $TOKEN"
 
 # 一键唤醒（F2）
-curl -s -X POST http://127.0.0.1:8080/api/devices/1/wake
+curl -s -X POST http://127.0.0.1:8080/api/devices/1/wake -H "Authorization: Bearer $TOKEN"
 # {"sent":true,"sent_at":"..."}   ← 仅表示包已发出，不代表设备已开机
 
 # 触发校验（F3）：异步，立即返回；结果从状态接口取
-curl -s -X POST http://127.0.0.1:8080/api/devices/1/check
+curl -s -X POST http://127.0.0.1:8080/api/devices/1/check -H "Authorization: Bearer $TOKEN"
 # {"status":"checking","started_at":"..."}
-curl -s http://127.0.0.1:8080/api/status
+curl -s http://127.0.0.1:8080/api/status -H "Authorization: Bearer $TOKEN"
 # [{"device_id":1,"status":"online","message":"","checked_at":"..."}]
+
+# 登出（吊销当前令牌）
+curl -s -X POST http://127.0.0.1:8080/api/logout -H "Authorization: Bearer $TOKEN"
 
 # 单元测试
 go test ./...
@@ -39,7 +50,7 @@ go test ./...
 
 浏览器打开 `http://127.0.0.1:8080/` 可看到占位页与服务状态（正式页面属 E5）。
 
-接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）。
+接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）、`docs/E4-contract.md`（鉴权与限流）。
 各环节验收记录：`docs/E*-acceptance.md`。
 
 ## 环境变量
@@ -49,7 +60,10 @@ go test ./...
 | `WOL_PORT` | `8080` | HTTP 监听端口 |
 | `WOL_DATA_DIR` | `/data` | 数据目录（SQLite 文件所在位置） |
 | `WOL_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `WOL_ADMIN_PASSWORD` | 空 | 登录口令，由环境注入（E4 启用），**禁止写入代码或镜像** |
+| `WOL_ADMIN_PASSWORD` | **无（必填）** | 登录口令，由环境注入；为空时进程拒绝启动，**禁止写入代码或镜像** |
+| `WOL_TOKEN_TTL` | `168h` | 登录令牌有效期，Go duration 写法（如 `12h`、`30m`） |
+
+安全提示：令牌为明文 Bearer，服务设计为**局域网直连**使用。不要暴露到公网；不建议放在反向代理后面（会因共享来源 IP 让限流误伤所有人）。
 
 ## 目录结构
 
@@ -60,6 +74,7 @@ internal/store/      SQLite 连接、建表迁移、device 表读写、校验状
 internal/httpapi/    路由、中间件、健康检查、设备 CRUD、唤醒、校验与状态（接口一律在此登记）
 internal/wol/        魔术包构造与发送（纯函数 + 单次 UDP 发送，不重试不并发）
 internal/probe/      唤醒结果校验：Ping / TCP 探测 + 进程内任务生命周期（无队列）
+internal/auth/       单口令认证：令牌签发/校验/吊销、按 IP 的失败限流（仅标准库）
 web/                 静态前端资源（无构建链）
 deploy/              Dockerfile 与编排文件（E7）
 test/e2e/            端到端验收脚本（E8）

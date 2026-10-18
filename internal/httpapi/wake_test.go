@@ -3,8 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -50,8 +48,8 @@ func newWakeTestServer(t *testing.T, w *fakeWaker) (http.Handler, *fakeDeviceSto
 		ProbeValue:    "192.168.1.10",
 	})
 	fs.nextID = 2
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fakePinger{}, fs, w, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes(), fs
+	h := New(fakePinger{}, fs, w, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes()
+	return withTestToken(h), fs
 }
 
 func assertKeys(t *testing.T, raw []byte, want []string) {

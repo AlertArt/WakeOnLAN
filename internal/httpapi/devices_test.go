@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -24,8 +23,8 @@ const validBody = `{"name":"书房主机","mac":"aa:bb:cc:dd:ee:ff","broadcast_a
 func newDeviceTestServer(t *testing.T) (http.Handler, *fakeDeviceStore) {
 	t.Helper()
 	fs := newFakeDeviceStore()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes(), fs
+	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes()
+	return withTestToken(h), fs
 }
 
 func do(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -356,8 +355,7 @@ func TestDeleteDeviceNotFound(t *testing.T) {
 func TestDeviceStoreErrorHidesDetail(t *testing.T) {
 	fs := newFakeDeviceStore()
 	fs.err = errBoom
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes()
+	h := withTestToken(New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes())
 
 	rec := do(h, http.MethodGet, "/api/devices", "")
 	if rec.Code != http.StatusInternalServerError {
