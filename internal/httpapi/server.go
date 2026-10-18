@@ -29,16 +29,26 @@ type DeviceStore interface {
 
 // Server 持有路由所需的依赖。
 type Server struct {
-	db      Pinger
-	devices DeviceStore
-	waker   Waker
-	logger  *slog.Logger
-	webDir  string
+	db       Pinger
+	devices  DeviceStore
+	waker    Waker
+	checker  Checker
+	statuses StatusStore
+	logger   *slog.Logger
+	webDir   string
 }
 
 // New 构造 Server。
-func New(db Pinger, devices DeviceStore, waker Waker, logger *slog.Logger, webDir string) *Server {
-	return &Server{db: db, devices: devices, waker: waker, logger: logger, webDir: webDir}
+func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses StatusStore, logger *slog.Logger, webDir string) *Server {
+	return &Server{
+		db:       db,
+		devices:  devices,
+		waker:    waker,
+		checker:  checker,
+		statuses: statuses,
+		logger:   logger,
+		webDir:   webDir,
+	}
 }
 
 // Routes 返回完整路由表。新增接口必须在此登记，便于一处审阅。
@@ -56,6 +66,10 @@ func (s *Server) Routes() http.Handler {
 
 	// F2 一键唤醒：接口契约见 docs/E2-contract.md。
 	mux.HandleFunc("POST /api/devices/{id}/wake", s.handleWakeDevice)
+
+	// F3 唤醒校验：接口契约见 docs/E3-contract.md。
+	mux.HandleFunc("POST /api/devices/{id}/check", s.handleStartCheck)
+	mux.HandleFunc("GET /api/status", s.handleListStatus)
 
 	// 静态资源：E0 仅一个占位页，前端页面由 E5 在此目录内新增。
 	mux.Handle("/", http.FileServer(http.Dir(s.webDir)))

@@ -17,7 +17,7 @@ func (f fakePinger) Ping(context.Context) error { return f.err }
 
 func newTestServer(dbErr error) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fakePinger{err: dbErr}, newFakeDeviceStore(), &fakeWaker{}, logger, "../../web").Routes()
+	return New(fakePinger{err: dbErr}, newFakeDeviceStore(), &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes()
 }
 
 func TestHealthOK(t *testing.T) {

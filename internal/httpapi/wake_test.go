@@ -51,7 +51,7 @@ func newWakeTestServer(t *testing.T, w *fakeWaker) (http.Handler, *fakeDeviceSto
 	})
 	fs.nextID = 2
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fakePinger{}, fs, w, logger, "../../web").Routes(), fs
+	return New(fakePinger{}, fs, w, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes(), fs
 }
 
 func assertKeys(t *testing.T, raw []byte, want []string) {

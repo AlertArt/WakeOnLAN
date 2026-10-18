@@ -16,6 +16,7 @@ import (
 
 	"wol/internal/config"
 	"wol/internal/httpapi"
+	"wol/internal/probe"
 	"wol/internal/store"
 	"wol/internal/wol"
 )
@@ -51,11 +52,19 @@ func run() error {
 		return err
 	}
 
+	// 上次进程可能在轮询中途退出，此处把残留的「校验中」重置为「待校验」（3-4）。
+	if n, err := db.MarkInterrupted(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		logger.Info("已重置上次中断的校验状态", "count", n)
+	}
+
 	waker := wol.NewService()
+	runner := probe.NewRunner(ctx, db, logger)
 
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           httpapi.New(db, db, waker, logger, "web").Routes(),
+		Handler:           httpapi.New(db, db, waker, runner, db, logger, "web").Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

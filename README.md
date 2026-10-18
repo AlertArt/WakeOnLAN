@@ -2,7 +2,7 @@
 
 单用户、自用的局域网唤醒服务：录入设备 → 点一下 → 发送 WOL 魔术包 → 用 Ping / TCP 端口探测给出"已上线 / 超时未响应"的明确结论。移动端为响应式 Web + PWA，部署为单容器 + 单文件 SQLite。
 
-> 当前处于 **E2 环节：唤醒核心（魔术包发送）**（已放行）。设备 CRUD 与一键唤醒可用；唤醒后的在线校验尚未实现。
+> 当前处于 **E3 环节：唤醒校验与状态轮询**（已放行）。设备 CRUD、一键唤醒、异步校验与状态查询均可用；前端页面与鉴权尚未实现。
 
 ## 快速开始（本地）
 
@@ -16,20 +16,30 @@ curl -s http://127.0.0.1:8080/api/health
 
 # 设备接口
 curl -s -X POST http://127.0.0.1:8080/api/devices \
-  -d '{"name":"书房主机","mac":"AA:BB:CC:DD:EE:FF","broadcast_addr":"192.168.1.255"}'
+  -d '{"name":"书房主机","mac":"AA:BB:CC:DD:EE:FF","broadcast_addr":"192.168.1.255","probe_type":"ping","probe_value":"192.168.1.10"}'
 curl -s http://127.0.0.1:8080/api/devices
 
 # 一键唤醒（F2）
 curl -s -X POST http://127.0.0.1:8080/api/devices/1/wake
 # {"sent":true,"sent_at":"..."}   ← 仅表示包已发出，不代表设备已开机
 
+# 触发校验（F3）：异步，立即返回；结果从状态接口取
+curl -s -X POST http://127.0.0.1:8080/api/devices/1/check
+# {"status":"checking","started_at":"..."}
+curl -s http://127.0.0.1:8080/api/status
+# [{"device_id":1,"status":"online","message":"","checked_at":"..."}]
+
 # 单元测试
 go test ./...
 ```
 
+状态取值：`pending` / `checking` / `online` / `timeout` / `failed`。轮询上限 120 秒、间隔 5 秒，均为常量，不提供配置。
+
+`ping` 类型校验依赖系统 `ping` 命令（tcp 类型不依赖）。容器镜像必须包含 ping，否则这类校验会明确失败并说明原因。
+
 浏览器打开 `http://127.0.0.1:8080/` 可看到占位页与服务状态（正式页面属 E5）。
 
-接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）。
+接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）。
 各环节验收记录：`docs/E*-acceptance.md`。
 
 ## 环境变量
@@ -46,10 +56,10 @@ go test ./...
 ```
 cmd/wold/            进程入口：加载配置 → 初始化存储 → 迁移 → 启动 HTTP → 优雅退出
 internal/config/     环境变量解析与校验
-internal/store/      SQLite 连接、建表迁移、device 表读写
-internal/httpapi/    路由、中间件、健康检查、设备 CRUD（接口一律在此登记）
+internal/store/      SQLite 连接、建表迁移、device 表读写、校验状态（只留最近一次）
+internal/httpapi/    路由、中间件、健康检查、设备 CRUD、唤醒、校验与状态（接口一律在此登记）
 internal/wol/        魔术包构造与发送（纯函数 + 单次 UDP 发送，不重试不并发）
-internal/probe/      唤醒结果校验：Ping / TCP 探测（E3）
+internal/probe/      唤醒结果校验：Ping / TCP 探测 + 进程内任务生命周期（无队列）
 web/                 静态前端资源（无构建链）
 deploy/              Dockerfile 与编排文件（E7）
 test/e2e/            端到端验收脚本（E8）

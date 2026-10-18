@@ -25,7 +25,7 @@ func newDeviceTestServer(t *testing.T) (http.Handler, *fakeDeviceStore) {
 	t.Helper()
 	fs := newFakeDeviceStore()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fakePinger{}, fs, &fakeWaker{}, logger, "../../web").Routes(), fs
+	return New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes(), fs
 }
 
 func do(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -357,7 +357,7 @@ func TestDeviceStoreErrorHidesDetail(t *testing.T) {
 	fs := newFakeDeviceStore()
 	fs.err = errBoom
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := New(fakePinger{}, fs, &fakeWaker{}, logger, "../../web").Routes()
+	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), logger, "../../web").Routes()
 
 	rec := do(h, http.MethodGet, "/api/devices", "")
 	if rec.Code != http.StatusInternalServerError {
