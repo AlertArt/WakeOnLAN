@@ -290,6 +290,23 @@ h2 {
   flex: 0 0 auto;
 }
 
+/* ---------- 离线提示条（E6） ---------- */
+
+.offline-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  margin: 0;
+  padding: 9px 16px;
+  padding-bottom: calc(9px + env(safe-area-inset-bottom));
+  text-align: center;
+  font-size: 13px;
+  color: #ffffff;
+  background: #b26a00;
+}
+
 /* ---------- 空态 ---------- */
 
 .empty {

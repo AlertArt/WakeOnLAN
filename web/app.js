@@ -170,6 +170,38 @@
     return node;
   }
 
+  // 离线提示条（E6 契约第四节）：由 navigator.onLine 驱动，恢复后自动隐藏。
+  // 是页内元素，不是独立页面；文案只说明"可能不是最新"，不暗示数据是最新的。
+  function initOfflineBar() {
+    var bar = el('p', 'offline-bar', '网络已断开，页面数据可能不是最新，恢复后请刷新');
+    bar.setAttribute('role', 'status');
+    bar.hidden = navigator.onLine;
+    document.body.appendChild(bar);
+
+    function sync() {
+      bar.hidden = navigator.onLine;
+    }
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', sync);
+  }
+
+  // Service Worker：只缓存静态壳，接口一律不缓存。注册失败静默降级，不影响页面功能。
+  function registerSW() {
+    if (!('serviceWorker' in navigator)) return;
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function () {
+        /* 安全上下文之外或注册失败：按无 SW 使用，功能不受影响 */
+      });
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initOfflineBar);
+  } else {
+    initOfflineBar();
+  }
+  registerSW();
+
   window.WOL = {
     ApiError: ApiError,
     token: token,
