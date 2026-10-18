@@ -1,0 +1,32 @@
+# 忽略规则
+
+# 构建产物
+/wold
+/wold.exe
+/bin/
+/dist/
+
+# 运行期数据（SQLite 与日志）
+/tmp/
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# 临时工具目录
+/tools_tmp/
+
+# 文档流水线中间产物
+/output/
+
+# 本地环境变量
+.env
+.env.*
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store
+wold.exe
+.workbuddy/
