@@ -2,69 +2,94 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>局域网唤醒</title>
-<style>
-  :root {
-    --color-text: #1f2328;
-    --color-muted: #6b7280;
-    --color-border: #e5e7eb;
-    --color-primary: #1565c0;
-    --color-bg: #ffffff;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-    background: var(--color-bg);
-    color: var(--color-text);
-    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  }
-  main { width: 100%; max-width: 420px; }
-  h1 { font-size: 20px; margin: 0 0 8px; }
-  p { font-size: 14px; line-height: 1.7; color: var(--color-muted); margin: 0 0 16px; }
-  .status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 14px;
-    border: 1px solid var(--color-border);
-    border-radius: 10px;
-    font-size: 14px;
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-muted); }
-  .dot.ok { background: #2e7d32; }
-  .dot.bad { background: #c62828; }
-  footer { margin-top: 20px; font-size: 12px; color: var(--color-muted); }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1565c0">
+<title>设备 · 局域网唤醒</title>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<main>
-  <h1>局域网唤醒系统</h1>
-  <p>服务骨架已就绪。设备管理与唤醒界面将在后续环节接入，此处仅用于确认服务可达。</p>
-  <div class="status">
-    <span class="dot" id="dot"></span>
-    <span id="text">正在检测服务状态…</span>
+<header class="topbar">
+  <h1>局域网唤醒</h1>
+  <button class="btn btn--ghost" id="logout" type="button">退出</button>
+</header>
+
+<main class="page">
+  <p class="notice" id="notice" role="status" hidden></p>
+
+  <div class="toolbar">
+    <button class="btn btn--primary" id="add-device" type="button">添加设备</button>
+    <button class="btn" id="refresh" type="button">刷新</button>
   </div>
-  <footer>E0 骨架占位页</footer>
+
+  <ul class="cards" id="device-list"></ul>
+
+  <section class="empty" id="empty" hidden>
+    <h2>还没有设备</h2>
+    <p>点「添加设备」录入第一台要唤醒的机器：填写 MAC 地址与广播地址，选择一种校验方式，保存后即可一键唤醒。</p>
+  </section>
 </main>
-<script>
-  const dot = document.getElementById('dot');
-  const text = document.getElementById('text');
-  fetch('/api/health')
-    .then((r) => r.json())
-    .then((d) => {
-      dot.classList.add(d.status === 'ok' ? 'ok' : 'bad');
-      text.textContent = d.status === 'ok' ? '服务正常' : '服务异常：数据库不可用';
-    })
-    .catch(() => {
-      dot.classList.add('bad');
-      text.textContent = '无法连接服务';
-    });
-</script>
+
+<dialog id="editor" aria-labelledby="editor-title">
+  <form class="sheet" id="editor-form" novalidate>
+    <h2 id="editor-title">添加设备</h2>
+    <p class="form-error" id="editor-error" role="alert" hidden></p>
+
+    <label class="field">
+      <span>名称</span>
+      <input id="f-name" maxlength="32" autocomplete="off" placeholder="例如：书房主机">
+    </label>
+
+    <label class="field">
+      <span>MAC 地址</span>
+      <input id="f-mac" autocomplete="off" placeholder="AA:BB:CC:DD:EE:FF">
+      <small class="hint">支持 AA:BB:CC:DD:EE:FF、AA-BB-CC-DD-EE-FF 或 12 位十六进制。</small>
+    </label>
+
+    <div class="field-row">
+      <label class="field">
+        <span>广播地址</span>
+        <input id="f-addr" autocomplete="off" placeholder="192.168.1.255">
+      </label>
+      <label class="field field--port">
+        <span>端口</span>
+        <input id="f-port" type="number" min="1" max="65535" step="1" inputmode="numeric" value="9">
+      </label>
+    </div>
+
+    <label class="field">
+      <span>校验方式</span>
+      <select id="f-probe-type">
+        <option value="none">不校验</option>
+        <option value="ping">Ping 主机</option>
+        <option value="tcp">TCP 端口</option>
+      </select>
+    </label>
+
+    <label class="field" id="f-probe-value-field">
+      <span id="f-probe-value-label">校验目标</span>
+      <input id="f-probe-value" autocomplete="off">
+      <small class="hint" id="f-probe-value-hint"></small>
+    </label>
+
+    <div class="sheet-actions">
+      <button class="btn" type="button" id="editor-cancel">取消</button>
+      <button class="btn btn--primary" type="submit" id="editor-submit">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <div class="sheet">
+    <h2 id="confirm-title">删除设备</h2>
+    <p id="confirm-text"></p>
+    <div class="sheet-actions">
+      <button class="btn" type="button" id="confirm-cancel">取消</button>
+      <button class="btn btn--danger" type="button" id="confirm-ok">删除</button>
+    </div>
+  </div>
+</dialog>
+
+<script src="app.js"></script>
+<script src="devices.js"></script>
 </body>
 </html>

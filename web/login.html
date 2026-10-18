@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1565c0">
+<title>登录 · 局域网唤醒</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="body--login">
+<main class="login-wrap">
+  <form class="login-card" id="login-form" novalidate>
+    <h1>局域网唤醒</h1>
+    <p class="login-sub">输入口令后即可查看设备、发送唤醒指令。</p>
+    <p class="form-error" id="form-error" role="alert" hidden></p>
+    <label class="field">
+      <span>口令</span>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus>
+    </label>
+    <button class="btn btn--primary btn--block" id="submit" type="submit">登录</button>
+    <p class="hint">口令由部署时的环境变量提供，忘记后需要重启服务重新设置。</p>
+  </form>
+</main>
+<script src="app.js"></script>
+<script src="login.js"></script>
+</body>
+</html>
