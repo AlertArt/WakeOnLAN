@@ -1,0 +1,6 @@
+# 行尾约定：脚本与 Dockerfile 必须是 LF。
+# CRLF 会让 Linux 上的 /bin/bash 找不到解释器（bad interpreter: /bin/bash^M），
+# 也会让 Dockerfile 的续行解析出错。
+*.sh       text eol=lf
+Dockerfile text eol=lf
+*.yml      text eol=lf
