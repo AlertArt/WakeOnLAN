@@ -143,7 +143,7 @@ DELETE /api/devices/{id}
 
 | 不做项 | 归属 |
 | --- | --- |
-| 唤醒接口 `POST /api/devices/{id}/wake` | E2 |
+| 唤醒接口 `POST /api/devices/{id}/wake` | E2，契约见 `docs/E2-contract.md` |
 | 状态接口 `GET /api/devices/{id}/status` | E3 |
 | 认证头 `Authorization` | E4 |
 | 分页、排序、搜索参数 | 二期 |

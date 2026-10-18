@@ -17,6 +17,7 @@ import (
 	"wol/internal/config"
 	"wol/internal/httpapi"
 	"wol/internal/store"
+	"wol/internal/wol"
 )
 
 func main() {
@@ -50,9 +51,11 @@ func run() error {
 		return err
 	}
 
+	waker := wol.NewService()
+
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           httpapi.New(db, db, logger, "web").Routes(),
+		Handler:           httpapi.New(db, db, waker, logger, "web").Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
