@@ -1,0 +1,36 @@
+# 单服务编排：一个应用容器、一个命名卷，没有数据库/缓存/反向代理。
+# 部署口径见 docs/E7-contract.md。
+
+services:
+  wold:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: wol:1.0.0
+    container_name: wold
+
+    # 必须 host：WOL 是 UDP 广播，桥接网络下包只会落在 docker0，设备永远不开机，
+    # 而接口照样返回 202、日志照样无错。详见 docs/E7-contract.md 第三节。
+    network_mode: host
+
+    # 口令等配置从 .env 注入（.env 不进镜像、不进仓库）。
+    env_file:
+      - .env
+    environment:
+      WOL_DATA_DIR: /data
+
+    # SQLite 落在命名卷上，不写容器层：删容器重建后数据仍在。
+    volumes:
+      - wol-data:/data
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:${WOL_PORT:-8080}/api/health\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  wol-data:

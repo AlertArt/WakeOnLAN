@@ -1,0 +1,35 @@
+# 构建上下文只留编译需要的东西。任何口令文件都不得进入上下文。
+.git
+.gitignore
+.github
+.workbuddy
+
+# 本地配置与运行期数据
+.env
+.env.*
+data/
+tmp/
+*.db
+*.db-wal
+*.db-shm
+
+# 文档、验收记录与过程产物
+docs/
+output/
+e0/
+e1/
+e2/
+e3/
+e4/
+e5/
+e6/
+e7/
+test/
+deploy/
+*.md
+
+# 本地构建产物。注意不要写裸 `wold`：该规则等价于 `**/wold`，
+# 会把源码目录 cmd/wold/ 一并排除，导致编译阶段找不到 main.go。
+*.exe
+/bin/
+/dist/

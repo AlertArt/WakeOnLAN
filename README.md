@@ -2,7 +2,7 @@
 
 单用户、自用的局域网唤醒服务：录入设备 → 点一下 → 发送 WOL 魔术包 → 用 Ping / TCP 端口探测给出"已上线 / 超时未响应"的明确结论。移动端为响应式 Web + PWA，部署为单容器 + 单文件 SQLite。
 
-> 当前处于 **E6 环节：PWA 与移动端适配**（已放行）。可添加到手机主屏（standalone、自有图标）；静态壳有缓存、断网打开有提示；接口数据永不缓存，断网不显示陈旧状态。
+> 当前处于 **E7 环节：Docker 镜像与编排**（产物就绪，**验收阻塞**：本机没有可用的 Docker，7-1/7-2/7-3/7-6 需在装有 Docker 的 Linux 主机上执行 `deploy/verify-e7.sh` 产出证据）。设备 CRUD、唤醒与校验、令牌鉴权、移动端界面与 PWA、单容器部署文件均已就位。
 
 ## 快速开始（本地）
 
@@ -50,8 +50,39 @@ go test ./...
 
 浏览器打开 `http://127.0.0.1:8080/`：未登录会停在登录页，输入口令后进入设备列表页。页面上可添加/编辑/删除设备（弹层操作）、一键唤醒并自动轮询校验结果（已上线 / 超时未响应 / 校验失败）；令牌过期会自动带回登录页。手机浏览器里可"添加到主屏幕"当作独立应用使用（局域网 HTTP 地址下 Service Worker 不生效，退化为普通书签；要完整 PWA 需 HTTPS，属部署决策）。
 
-接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）、`docs/E4-contract.md`（鉴权与限流）、`docs/E5-contract.md`（前端页面与令牌存放）、`docs/E6-contract.md`（PWA 清单与缓存策略）。
+接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）、`docs/E4-contract.md`（鉴权与限流）、`docs/E5-contract.md`（前端页面与令牌存放）、`docs/E6-contract.md`（PWA 清单与缓存策略）、`docs/E7-contract.md`（镜像规格、网络模式与部署口径）。
 各环节验收记录：`docs/E*-acceptance.md`；界面截图见 `docs/e5-shots/`、`docs/e6-shots/`。
+
+## 部署（Docker）
+
+前提：**Linux 主机**（小主机 / NAS / 树莓派均可）+ Docker 与 compose 插件。Windows / macOS 的 Docker Desktop 不适用，原因见下方第 1 条。
+
+```bash
+cd deploy
+cp .env.example .env
+vi .env                       # 把 WOL_ADMIN_PASSWORD 改成 16 位以上随机串
+docker compose up -d --build
+docker compose ps             # STATUS 列出现 (healthy) 即就绪
+```
+
+然后浏览器访问 `http://<主机IP>:8080`。
+
+四条必须知道的事：
+
+1. **网络模式是 `host`，不是可选项。** WOL 是 UDP 广播，Docker 默认桥接网络下广播包只会落在 `docker0` 虚拟网桥上，永远到不了物理局域网——此时接口照样返回 `202`、日志照样无错误、设备就是不开机。Docker Desktop（macOS/Windows）会把 `host` 语义改写到虚拟机内，同样发不出广播，所以部署机必须是 Linux。
+2. **端口直接占用宿主端口**，没有 `ports` 映射也没有反向代理：端口冲突改 `WOL_PORT`；反过来说，口令是唯一的门，务必设置得足够长。
+3. **数据在命名卷 `wol-data` 上**，删容器、重建容器都不丢。若改用 bind mount（`-v /srv/wol:/data`），宿主目录需先 `sudo chown 10001:10001 /srv/wol`，否则非 root 进程写不进去。
+4. **镜像内含 `iputils-ping`**：ping 类校验依赖系统命令，缺了会直接判"校验失败"。镜像还以非 root（uid 10001）运行，因此不要给容器加 `no-new-privileges`——那会破坏 ping 所需的文件能力。
+
+一键验收（在装有 Docker 的机器上执行，逐项打印 7-1~7-8 的 PASS/FAIL）：
+
+```bash
+cd deploy && ./verify-e7.sh
+```
+
+镜像支持 amd64 与 arm64：`docker buildx build --platform linux/arm64 -f Dockerfile .`
+
+> 本机开发环境没有 Docker，7-1/7-2/7-3/7-6 尚未产生实测证据，详见 `docs/E7-acceptance.md`。
 
 ## 环境变量
 
@@ -76,7 +107,9 @@ internal/wol/        魔术包构造与发送（纯函数 + 单次 UDP 发送，
 internal/probe/      唤醒结果校验：Ping / TCP 探测 + 进程内任务生命周期（无队列）
 internal/auth/       单口令认证：令牌签发/校验/吊销、按 IP 的失败限流（仅标准库）
 web/                 静态前端：登录页 + 设备列表页 + 弹层、manifest、Service Worker、图标（原生实现，零依赖零构建）
-deploy/              Dockerfile 与编排文件（E7）
+Dockerfile           多阶段构建：静态编译（amd64/arm64）→ debian-slim 运行层（含 ping、非 root）
+.dockerignore        构建上下文白名单化：源码与 web/ 进，.env/.git/docs/数据一律不进
+deploy/              docker-compose.yml（单服务 + host 网络 + 命名卷）、.env.example、verify-e7.sh 一键验收
 test/e2e/            端到端验收脚本（E8）
 docs/                接口契约、各环节说明与验收记录
 e0/ e1/ ...          各环节任务单

@@ -23,6 +23,9 @@
 .env
 .env.*
 
+# 样例配置要入库：里面只有占位符，没有真实口令
+!deploy/.env.example
+
 # 编辑器
 .idea/
 .vscode/

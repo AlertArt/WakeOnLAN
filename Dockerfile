@@ -1,0 +1,57 @@
+# 多阶段构建：编译阶段带工具链，运行层只留二进制与运行时依赖。
+# 镜像规格与限制见 docs/E7-contract.md。
+
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
+
+WORKDIR /src
+
+# 先只拷贝依赖清单，改代码时不必重下模块。
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+
+# buildx 注入的目标平台；CGO 关闭后 modernc.org/sqlite 可静态编译到任意架构。
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/wold ./cmd/wold
+
+# 运行层：iputils-ping 供 E3 的 ping 类校验（缺失时该类型校验会直接判失败），
+# curl 只供 HEALTHCHECK 使用。
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        iputils-ping \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 固定 uid/gid：bind mount 时宿主可据此 chown。
+RUN groupadd --gid 10001 wol \
+    && useradd --uid 10001 --gid 10001 --shell /usr/sbin/nologin --no-create-home wol \
+    && mkdir -p /app /data \
+    && chown 10001:10001 /data
+
+WORKDIR /app
+
+COPY --from=build /out/wold /app/wold
+COPY --chown=10001:10001 web/ /app/web/
+
+# 只预设路径与端口；口令必须由运行时注入，绝不能出现在镜像层里。
+ENV WOL_DATA_DIR=/data \
+    WOL_PORT=8080
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+USER 10001:10001
+
+# 健康检查只回答"进程在、DB 连得上"：不鉴权、不写库、不触发探测。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${WOL_PORT}/api/health" || exit 1
+
+# exec 形式：PID 1 直接收到 SIGTERM，走 main.go 的优雅关闭。
+ENTRYPOINT ["/app/wold"]
