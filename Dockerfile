@@ -22,7 +22,17 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 # curl 只供 HEALTHCHECK 使用。
 FROM debian:bookworm-slim
 
-RUN apt-get update \
+# 默认用官方源。deb.debian.org 在国内网络下常返回 502（代理拦截或链路超时），
+# 此时用 --build-arg APT_MIRROR=mirrors.aliyun.com 切换，不必改文件。
+# bookworm 的 apt 源是 deb822 格式的 /etc/apt/sources.list.d/debian.sources，
+# 没有 /etc/apt/sources.list；这里对两种布局都做替换，兼容将来的基础镜像。
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+            [ -f "$f" ] && sed -i "s|deb.debian.org|$APT_MIRROR|g" "$f"; \
+        done; \
+    fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         iputils-ping \
         curl \

@@ -1,147 +1,140 @@
 # E7 验收记录
 
-对应开发计划 4.8 节的验收清单 7-1 至 7-8。验收时间：2026-10-18 21:36–21:58（GMT+8）。
+对应开发计划 4.8 节的验收清单 7-1 至 7-8。验收时间：2026-10-19 14:12–14:27（GMT+8）。
 
-## 结论：产物就绪，验收阻塞（未放行）
+验收环境：Windows 10 19045 + Docker Desktop 4.95.0（Engine 29.8.2，containerd 2.3.6，linux/amd64 容器模式），镜像库为空（干净环境）。
 
-本机**没有任何可用的容器运行时**：`docker` 命令不存在、Docker Desktop 未安装、WSL 被本机安全策略禁用（`wsl.exe` 在程序黑名单中，不可绕过）。7-1、7-2、7-3、7-6 的本质是"容器真的起来了、卷真的挂上了、容器删了数据还在、arm64 真的能跑"，这四问只有真实 Docker 守护进程能回答。
+## 结论：7-1 至 7-7 全部通过；7-8 链路已验证（真实开机待 E8）
 
-按 `e7/task.md` 的约定：**未执行即未执行**，不以"读 Dockerfile 判断应该没问题"替代证据。因此本环节状态记为 **阻塞**，不标"放行"。
-
-本环节实际交付了两样东西来消解这个阻塞：一份经过机械核验的产物集，以及一条命令就能产出全部证据的 `deploy/verify-e7.sh`。
-
-| 序号 | 验收动作 | 结果 | 依据 |
+| 序号 | 验收动作 | 结果 | 证据 |
 | --- | --- | --- | --- |
-| 7-1 | 干净环境一条命令启动、健康检查转健康 | **待证（需 Docker）** | 本机无 Docker；`verify-e7.sh` 已实现自动判定（等 `Health.Status=healthy`，超时 120s） |
-| 7-2 | 重启容器后数据仍在 | **待证（需 Docker）** | 同上；脚本流程为 建设备 → restart → 复查 |
-| 7-3 | 删除容器后重建，数据仍在 | **待证（需 Docker）** | 脚本还加了一步 `down -v` 反证（数据确实在卷上，不在别处） |
-| 7-4 | 镜像体积合理、无工具链残留 | **部分** | 工具链：运行层无编译产物可 COPY（见 §2 结构性证据）；体积只能实测，估算 95–105MB，脚本会打印 `docker image inspect` 的真实值 |
-| 7-5 | 镜像内无 .env、密钥、源码仓库 | **部分** | 口令在 Dockerfile 中零命中（实测）；镜像内文件扫描需 Docker |
-| 7-6 | arm64 环境启动 | **部分** | `linux/arm64` 交叉编译实测通过（静态 ELF，`e_machine=183`）；arm64 容器启动未验证 |
-| 7-7 | 编排文件仅一个应用服务 | **通过** | compose 结构解析：`services` 键数 = 1，无 db/redis/nginx 等 |
-| 7-8 | 容器必须能发出广播包 | **部分** | `network_mode: host` 已写入并通过结构断言；真实开机验证归 E8 |
+| 7-1 | 干净环境一条命令启动、健康检查转健康 | **通过** | `docker compose up -d` 后约 4 秒 `STATUS = Up (healthy)`；`State.Health.Log` 最近一次 `ExitCode=0`，输出 `{"status":"ok","db":"ok",...}` |
+| 7-2 | 重启容器后数据仍在 | **通过** | 建"E7-验收-书房主机"→ `docker compose restart` → 重新登录查询，设备仍在（`id=1` 完整字段） |
+| 7-3 | 删除容器后重建，数据仍在 | **通过** | `down`（不删卷）→ `up`，设备仍在；再 `down -v` → 设备数 **0**（反证数据确实只在卷上） |
+| 7-4 | 镜像体积合理、无工具链残留 | **通过** | `docker image inspect` = **149,181,097 字节（142 MB）** ≤ 200MB；镜像内 `command -v go gcc make git` 无输出 |
+| 7-5 | 镜像内无 .env、密钥、源码仓库 | **通过** | `find / -xdev` 查 `.env*`/`.git`/`*.db`/`go.mod`/`*.go` 全无；`docker history --no-trunc` 与 `Config.Env` 中口令命中 **0 次**；镜像 Env 只有 `WOL_DATA_DIR`、`WOL_PORT` |
+| 7-6 | arm64 环境启动 | **通过（QEMU 仿真）** | `buildx --platform linux/arm64` 构建成功，`docker run --platform linux/arm64` 启动后 `(healthy)`，容器内 `uname -m` = `aarch64`、`ping` 可用、`uid=10001` |
+| 7-7 | 编排文件仅一个应用服务 | **通过** | `docker compose config --services` 输出仅 `wold`，计数 1 |
+| 7-8 | 容器必须能发出广播包 | **通过（链路）；开机待 E8** | 容器内 `tcpdump` 抓到 3 个 `UDP length 102` 包，载荷 `ffffffffffff + aabbccddee11×16`；Windows 宿主 `0.0.0.0:9` 实收 **3/3 包**，源地址 `192.168.1.11`（宿主网卡） |
 
-## 一、本机已产生的证据
+判定：**E7 放行**。7-8 的口径是"容器能否发出广播包"，已实测；"设备真的开机"属 E8 端到端演练。
 
-### 1. 构建上下文（`.dockerignore` 生效后）
-
-用 Docker 的匹配语义（不含分隔符的模式等价于 `**/<pattern>`，且匹配路径与所有上级目录）模拟构建上下文：
+## 一、7-1 启动与健康
 
 ```
-上下文文件数：53
-    .dockerignore   Dockerfile   go.mod   go.sum   cmd/wold/main.go
-    internal/**（54 个 .go）   web/**（12 个静态文件）
-PASS  上下文里没有 .env / .git / *.db
-PASS  上下文包含 Dockerfile 与编译所需源码（含 cmd/wold/main.go）
-PASS  上下文包含 web/ 静态资源 [12 个文件]
-PASS  上下文不含 docs/、eN/、test/、tmp/、deploy/
+NAME      IMAGE       COMMAND       SERVICE   CREATED          STATUS
+wold      wol:1.0.0   "/app/wold"   wold      12 seconds ago   Up 11 seconds (healthy)
+
+{"Status":"healthy","FailingStreak":0,"Log":[{"ExitCode":0,
+ "Output":"{\"status\":\"ok\",\"db\":\"ok\",\"time\":\"2026-10-19T06:16:11Z\"}\n"}]}
 ```
 
-### 2. 静态核验（43 项）
+健康检查由镜像自带 `curl` 打 `/api/health`，命中数据库真实状态（`db:"ok"`），不是返回固定字符串的假健康。
+
+## 二、7-2 / 7-3 数据落点
 
 ```
-== Dockerfile 断言（23 项，全过） ==
-PASS 多阶段构建（至少两个 FROM）
-PASS 构建阶段固定版本（golang:1.24-bookworm，非 latest）
-PASS 运行层固定版本（debian:bookworm-slim）
-PASS 关闭 CGO 静态编译 / 按 TARGETARCH 交叉编译 / -trimpath 与 -s -w
-PASS 运行层安装 iputils-ping / 含 curl / apt 索引已清理 / 无 apt-get upgrade
-PASS 声明数据卷 VOLUME ["/data"] / 数据目录属主为运行用户
-PASS 以非 root 用户运行 / USER 位于 ENTRYPOINT 之前
-PASS HEALTHCHECK 打 /api/health / 参数与契约一致（30s/5s/10s/3）
-PASS ENTRYPOINT 用 exec 形式
-PASS 只预设 DATA_DIR / PORT 两个 ENV
-PASS 镜像内无口令 ENV/ARG / 未 COPY 整个项目 / 未 COPY docs|eN|test|deploy
+== 卷内容 ==
+-rw-r--r-- 1 10001 10001 16384  wol.db      ← 属主就是运行用户，命名卷属主初始化生效
 
-== compose 断言（13 项，全过） ==
-PASS services 恰好一个 [wold]        PASS network_mode = host
-PASS 未声明 ports                    PASS 未使用 privileged / 无 depends_on
-PASS restart = unless-stopped        PASS env_file 指向 .env
-PASS 挂载 wol-data 到 /data          PASS 顶层声明了 wol-data 卷
-PASS healthcheck 打 /api/health      PASS healthcheck 周期与 Dockerfile 一致
-PASS 无数据库/缓存/反代服务          PASS 镜像标签非 latest [wol:1.0.0]
-
-== 结果：43/43 通过 ==
+7-2  restart 后：  [{"id":1,"name":"E7-验收-书房主机","mac":"AA:BB:CC:DD:EE:FF",...}]
+7-3a down + up 后： [{"id":1,"name":"E7-验收-书房主机",...}]
+7-3b down -v 后：   设备数 0
 ```
 
-7-4 的"无工具链残留"在此处是**结构性证据**而非实测：运行层只执行 `COPY --from=build /out/wold` 与 `COPY web/`，构建阶段（含 Go 工具链）在另一层，不会出现在最终镜像里。
+反证的意义：只做 7-3a 无法排除"数据其实写进了容器可写层、恰好在 `down` 时被保留"的可能；`down -v` 后归零，才证明数据落点唯一的容器外位置就是 `wol-data` 卷。
 
-### 3. 交叉编译（7-6 的构建部分）
+**过程中的一个正常现象**：`restart` 后旧令牌立即失效（`{"error":"unauthorized"}`）。会话表在内存，这是 E4 的既定行为（重启即全员登出，家庭场景可接受），不是缺陷。
 
-```
-linux/amd64  9,969,848 字节（9.5 MB）  静态 ELF，无 PT_INTERP，e_machine=62
-linux/arm64  9,437,368 字节（9.0 MB）  静态 ELF，无 PT_INTERP，e_machine=183
-```
-
-无 `PT_INTERP` 表示不依赖动态链接器，与 `CGO_ENABLED=0` 的预期一致；两个架构都产出可执行文件，说明 Dockerfile 里 `GOOS=$TARGETOS GOARCH=$TARGETARCH` 的做法成立。
-
-### 4. 构建阶段文件集重放
-
-把 Dockerfile **实际 COPY 的文件子集**（`go.mod`、`go.sum`、`cmd/`、`internal/`）单独复制到空目录，在 `GOPROXY=off`（禁用网络）下编译：
+## 三、7-4 / 7-5 镜像干净度
 
 ```
-exit=0
--rwxr-xr-x 9969848  out/wold      ← 与仓库内构建产物字节数完全一致
+体积：149,181,097 字节 = 142 MB（debian-slim 116MB + ping/curl + 二进制 9.9MB）
+工具链：command -v go gcc make git  →  （空）
+敏感文件：find .env* .git *.db go.mod *.go  →  （空）
+docker history 口令命中：0
+Config.Env 口令命中：0
+Config.Env 实际值：["PATH=...","WOL_DATA_DIR=/data","WOL_PORT=8080"]
 ```
 
-结论：Dockerfile 的 COPY 清单是**充分**的，不存在"漏拷某个文件导致容器内编译失败"的情况。
+同一次实测还确认了两个运行时前提：
 
-### 5. 运行层目录布局模拟
+- **非 root 可执行 ping**：`uid=10001`，`/usr/bin/ping` 带 `cap_net_raw=ep`，实际 `ping -c 1 223.5.5.5` 退出码 0、不可达地址输出 `100% packet loss` 且退出码非 0——E3 依赖的退出码语义成立。
+- **无口令时拒绝启动**：`docker run wol:1.0.0` 不带环境变量时直接打印 `WOL_ADMIN_PASSWORD 未设置` 并退出，不会以空口令跑起来。
 
-按镜像内的布局（`/app/wold` + `/app/web/`，`WORKDIR /app`）搭出同样结构并启动：
-
-```
-/api/health            200
-/                      200
-/login.html            200
-/app.js                200
-/manifest.json         200
-/sw.js                 200
-/icons/icon-192.png    200
-data/wol.db            已生成（WOL_DATA_DIR 相对路径解析正确）
-```
-
-结论：`httpapi.New(..., "web")` 的相对路径在容器工作目录下能正确命中静态资源，不需要改代码也不需要传绝对路径。
-
-### 6. 后端零改动
+## 四、7-6 arm64
 
 ```
-go vet ./...                → 无输出
-go test ./...               → 六包全绿，139 个用例
-git status -- internal cmd web go.mod go.sum → 空
+wol:1.0.0-arm64   linux/arm64   size=37,673,727
+容器状态：Up 13 seconds (healthy)
+容器内：uname -m → aarch64 ；ping → /usr/bin/ping ；health=200 ；uid=10001(wol)
 ```
 
-## 二、待执行（任意一台装了 Docker 的机器）
+说明：这是 QEMU 仿真启动，证明二进制与镜像在该架构上可执行、依赖齐全；真机性能不做结论（本项目负载极低，不构成风险）。
+
+## 五、7-8 广播链路（本环节最关键的取证）
+
+在 host 网络容器内以 root 抓包，同时在 **Windows 宿主**监听 `0.0.0.0:9`，触发 3 次唤醒：
+
+```
+容器内 tcpdump：
+06:24:18.706812 eth0  Out IP 192.168.65.3.59483 > 192.168.1.255.9: UDP, length 102
+06:24:20.692078 eth0  Out IP 192.168.65.3.51456 > 192.168.1.255.9: UDP, length 102
+06:24:22.705868 eth0  Out IP 192.168.65.3.51969 > 192.168.1.255.9: UDP, length 102
+0x0030:  ffff ffff ffff aabb ccdd ee11 aabb ccdd
+
+Windows 宿主监听：
+[recv] from=192.168.1.11:56589 len=102 prefix=ffffffffffff mac=aabbccddee11
+[recv] from=192.168.1.11:56602 len=102 prefix=ffffffffffff mac=aabbccddee11
+[recv] from=192.168.1.11:56615 len=102 prefix=ffffffffffff mac=aabbccddee11
+[done] 共收到 3 个包
+```
+
+结论：
+
+1. 包确实以**广播地址** `192.168.1.255:9` 发出，不是被错配成单播；
+2. 载荷是标准魔术包：6 字节 `FF` + MAC 重复 16 次 = **102 字节**，与 `docs/E2-contract.md` 逐字一致；
+3. 包越过了 Docker 的虚拟网络，**到达宿主机网卡**（源地址显示为 `192.168.1.11`，即宿主机物理网卡地址，说明经过了 NAT）；
+4. 连发 3 次恰好 3 包，无重复发送。
+
+已同时排除一个干扰项：抓包显示容器内到 `192.168.1.255` 的路由是 `via 192.168.65.1 dev eth0`——`192.168.65.0/24` 是 Docker Desktop 在 VM 内使用的网段，**与真实局域网 `192.168.1.0/24` 数值不同，不构成冲突**；但这也说明 Docker Desktop 场景下必须依赖 NAT 才能把包送进局域网。
+
+## 六、必须写进部署文档的两条限制（实测发现）
+
+### 1. Docker Desktop 的 `host` 网络不与 Windows 宿主共享端口
+
+实测：容器以 `network_mode: host` 运行，容器内 `curl 127.0.0.1:8080` 返回 200，但宿主机 `127.0.0.1:8080`、`192.168.1.11:8080`、容器 IP `192.168.65.3:8080` **全部连接失败**。同一镜像改用 bridge + `-p 18080:8080`，宿主访问立刻 200。
+
+原因：Docker Desktop 的 "host" 指的是 Linux 虚拟机内部的 host，不是 Windows host。这不是本项目配置错误，是平台语义差异。
+
+影响：**在 Docker Desktop 上跑本 compose，浏览器访问不到服务**（广播包仍能发出，见 7-8）。因此：
+
+- **生产部署必须是原生 Linux**（小主机 / NAS / 树莓派），host 网络与端口语义都符合预期；
+- 在 Windows/macOS 上想试用界面，需要临时加 `ports` 或改 bridge 网络，属**调试手段**，不能作为交付形态（bridge 下广播出不去）。
+
+### 2. 国内网络构建会卡在两处，需加速
+
+- **镜像拉取**：`auth.docker.io` 在本环境返回 502（不走代理也 000），需配 registry mirror 或直接用加速源拉取后 `docker tag`；
+- **apt 安装**：`deb.debian.org` 返回 502，已通过 `--build-arg APT_MIRROR=mirrors.aliyun.com` 解决（Dockerfile 内置该参数，不填则用官方源）。
+
+另：bookworm 的 apt 源是 deb822 格式的 `/etc/apt/sources.list.d/debian.sources`，**没有** `/etc/apt/sources.list`，最初按老写法替换文件直接报 `can't read`；现已对两种布局都做替换。
+
+## 七、构建与清理
 
 ```bash
-cd deploy
-cp .env.example .env
-# 把 WOL_ADMIN_PASSWORD 改成真实口令（16 位以上随机串）
-${EDITOR:-vi} .env
+# 本次实际使用的构建命令（国内网络）
+docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.0.0 .
+docker compose up -d          # 约 4 秒转 healthy
 
-./verify-e7.sh          # 一条命令跑完 7-1 ~ 7-8，逐项 PASS/FAIL
-echo "exit=$?"          # 0 = 全部通过
+# 验收后清理（已执行）
+docker compose down -v        # 容器 + 卷 + 临时安装的 tcpdump 全部消失
+docker rmi wol:1.0.0-arm64
+rm -f deploy/.env             # 含随机 24 位口令
 ```
 
-脚本会真实执行 `docker compose up -d --build`、`restart`、`down`、`down -v`，因此**会清空测试数据**，只应在测试环境运行。它输出的是逐项证据行（体积数值、`Health.Status`、`History` 命中数、`NetworkMode` 等），不是"已通过"四个字。
+验收期间生成的随机口令只存在于被 gitignore 的 `deploy/.env`；最终镜像、`docker history`、`Config.Env` 三处检索命中均为 0。
 
-## 三、本环节发现并修掉的一个真问题
+## 八、留给 E8 的两件事
 
-`.dockerignore` 里最初写了裸规则 `wold`（想排除本地编译出的二进制）。Docker 的匹配语义会把不含分隔符的模式当作 `**/wold`，于是**源码目录 `cmd/wold/` 被一并排除**，构建阶段将找不到 `main.go`，`docker build` 会直接失败。
-
-这个错误在"只读一遍文件"的验收方式下几乎必然漏过——上下文清单是机械枚举出来的，`cmd/wold/main.go` 从列表里消失才暴露出来。已改为只排除 `*.exe`，并在 `.dockerignore` 里留了注释说明原因。
-
-## 四、无法在此环境验证、也不打算"推断通过"的项
-
-| 项 | 为什么无法验证 |
-| --- | --- |
-| 容器真的能起来 | 需要 Docker 守护进程；本机没有，WSL 被安全策略禁用 |
-| 命名卷的属主初始化 | 依赖 Docker 在创建卷时从镜像目录复制属主，只有真实运行才能确认 uid 10001 可写 `/data` |
-| 非 root 用户执行 `ping` | 依赖 `iputils-ping` 的文件能力（`cap_net_raw`）在容器内生效；README 与契约已提示"不要加 `no-new-privileges`"，但结论需实测 |
-| 镜像体积 | 只能实测；估算 95–105MB 的依据是 debian-slim ≈ 75MB + ping/curl ≈ 12MB + 二进制 9.5MB |
-| arm64 容器启动 | 本机只能交叉编译，不能运行 arm64 二进制 |
-
-## 五、留给 E8 的两件事
-
-1. **7-8 的最终确认**：`verify-e7.sh` 只能证明容器用的是 host 网络，证明不了广播包真的到了物理网段。这一步需要真实目标机（关机 → 点唤醒 → 观察开机），属 E8 端到端演练。
-2. **升级时的缓存版本**：若 E8 期间改动 `web/` 任何文件，必须同步提升 `sw.js` 的 `CACHE` 常量，否则老用户会停在旧壳上。
+1. **真实目标机开机**：本环节只证明了"包以正确格式发到了宿主网卡"，没有证明"目标机被唤醒"。这一步需要一台支持 WOL 的关机设备，属 E8 端到端演练。
+2. **若 E8 改动 `web/` 任何文件**，必须同步提升 `sw.js` 的 `CACHE` 常量，否则老用户停在旧壳上。

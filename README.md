@@ -2,7 +2,7 @@
 
 单用户、自用的局域网唤醒服务：录入设备 → 点一下 → 发送 WOL 魔术包 → 用 Ping / TCP 端口探测给出"已上线 / 超时未响应"的明确结论。移动端为响应式 Web + PWA，部署为单容器 + 单文件 SQLite。
 
-> 当前处于 **E7 环节：Docker 镜像与编排**（产物就绪，**验收阻塞**：本机没有可用的 Docker，7-1/7-2/7-3/7-6 需在装有 Docker 的 Linux 主机上执行 `deploy/verify-e7.sh` 产出证据）。设备 CRUD、唤醒与校验、令牌鉴权、移动端界面与 PWA、单容器部署文件均已就位。
+> 当前处于 **E7 环节：Docker 镜像与编排**（已放行）。7-1~7-7 在 Docker Desktop 4.95 / Engine 29.8 上实测通过，7-8 的广播包已在宿主网卡抓到（102 字节标准魔术包）；"目标机真的开机"留给 E8 端到端演练。
 
 ## 快速开始（本地）
 
@@ -82,7 +82,22 @@ cd deploy && ./verify-e7.sh
 
 镜像支持 amd64 与 arm64：`docker buildx build --platform linux/arm64 -f Dockerfile .`
 
-> 本机开发环境没有 Docker，7-1/7-2/7-3/7-6 尚未产生实测证据，详见 `docs/E7-acceptance.md`。
+**国内网络构建**：`auth.docker.io` 与 `deb.debian.org` 常返回 502，两个办法：
+
+```bash
+# 1) 基础镜像拉不下来：改用镜像加速源后再打本地标签
+docker pull docker.1ms.run/library/golang:1.24-bookworm
+docker tag  docker.1ms.run/library/golang:1.24-bookworm golang:1.24-bookworm
+docker pull docker.1ms.run/library/debian:bookworm-slim
+docker tag  docker.1ms.run/library/debian:bookworm-slim debian:bookworm-slim
+
+# 2) apt 装不上 ping：切换 Debian 源（不填则用官方源）
+docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.0.0 .
+```
+
+实测结论见 `docs/E7-acceptance.md`（7-1~7-7 全部通过，7-8 广播包已在宿主网卡抓到）。
+
+> **在 Windows/macOS 上试用会看不到页面**：Docker Desktop 的 `host` 网络指虚拟机内部的 host，不与 Windows 宿主共享端口（实测容器内 `127.0.0.1:8080` 通、宿主 `127.0.0.1:8080` 与局域网 IP 均不通）。广播包仍能发出，只是浏览器访问不到界面。临时试用可加 `ports: ["8080:8080"]` 并去掉 `network_mode: host`，但那只是调试手段——桥接网络下发不出广播，不能作为部署形态。
 
 ## 环境变量
 
