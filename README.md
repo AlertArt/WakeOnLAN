@@ -57,6 +57,8 @@ go test ./...
 
 前提：**Linux 主机**（小主机 / NAS / 树莓派均可）+ Docker 与 compose 插件。Windows / macOS 的 Docker Desktop 不适用，原因见下方第 1 条。
 
+完整部署说明（含极空间等**无法访问 GitHub 的 NAS** 的离线镜像方案、图形界面逐项参数、故障排查）见 [`deploy/README.md`](deploy/README.md)。
+
 ```bash
 cd deploy
 cp .env.example .env
@@ -79,6 +81,18 @@ docker compose ps             # STATUS 列出现 (healthy) 即就绪
 ```bash
 cd deploy && ./verify-e7.sh
 ```
+
+**NAS 不能访问 GitHub 时**：在能联网的机器上打包，把产物拷进去导入，NAS 全程不需要外网。
+
+```bash
+cd deploy
+./package-offline.sh --apt-mirror mirrors.aliyun.com   # 产物在 dist/
+# 把 dist/ 整个目录拷到 NAS，然后：
+#   docker load -i wol-1.0.0-amd64.tar.gz
+#   docker compose -f docker-compose.nas.yml up -d
+```
+
+打包脚本会补齐两件容易踩坑的事：按 `--arch` 构建对应架构（极空间 Z2/Z2S 等 ARM 机型用 `--arch arm64`），以及把新版 Docker 导出的 OCI 布局转换成老版本 Docker 认识的经典布局。详见 [`deploy/README.md`](deploy/README.md)。
 
 镜像支持 amd64 与 arm64：`docker buildx build --platform linux/arm64 -f Dockerfile .`
 
@@ -124,7 +138,7 @@ internal/auth/       单口令认证：令牌签发/校验/吊销、按 IP 的�
 web/                 静态前端：登录页 + 设备列表页 + 弹层、manifest、Service Worker、图标（原生实现，零依赖零构建）
 Dockerfile           多阶段构建：静态编译（amd64/arm64）→ debian-slim 运行层（含 ping、非 root）
 .dockerignore        构建上下文白名单化：源码与 web/ 进，.env/.git/docs/数据一律不进
-deploy/              docker-compose.yml（单服务 + host 网络 + 命名卷）、.env.example、verify-e7.sh 一键验收
+deploy/              部署文件：README（部署指南）、compose（源码构建 / 离线导入两份）、.env.example、离线打包脚本、一键验收脚本
 test/e2e/            端到端验收脚本（E8）
 docs/                接口契约、各环节说明与验收记录
 e0/ e1/ ...          各环节任务单
