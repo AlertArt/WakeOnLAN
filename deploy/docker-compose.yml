@@ -18,6 +18,9 @@ services:
       - .env
     environment:
       WOL_DATA_DIR: /data
+      # 必须传进容器：healthcheck 按 ${WOL_PORT} 探测，wold 也要按它绑定，
+      # 否则端口覆盖只对探测生效、进程仍绑 8080，两者错位会导致 unhealthy。
+      WOL_PORT: ${WOL_PORT:-8080}
 
     # SQLite 落在命名卷上，不写容器层：删容器重建后数据仍在。
     volumes:

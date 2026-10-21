@@ -39,7 +39,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 固定 uid/gid：bind mount 时宿主可据此 chown。
+# 固定 uid/gid：bind mount 时宿主可据此对齐；命名卷空卷也按它初始化。
 RUN groupadd --gid 10001 wol \
     && useradd --uid 10001 --gid 10001 --shell /usr/sbin/nologin --no-create-home wol \
     && mkdir -p /app /data \
@@ -57,11 +57,15 @@ ENV WOL_DATA_DIR=/data \
 VOLUME ["/data"]
 EXPOSE 8080
 
-USER 10001:10001
+# 入口脚本负责：root 启动 → 修正 /data 属主 → setpriv 降权到 10001 运行。
+# 因此这里不再声明 USER 10001：容器必须以 root 起步才能自愈权限，
+# 业务进程的实际 uid 仍是 10001（见 docker top 的 UID 列）。
+# --chmod 需要 BuildKit（Docker Desktop 自带）；纯旧版构建器请改用 RUN chmod。
+COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # 健康检查只回答"进程在、DB 连得上"：不鉴权、不写库、不触发探测。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${WOL_PORT}/api/health" || exit 1
 
-# exec 形式：PID 1 直接收到 SIGTERM，走 main.go 的优雅关闭。
-ENTRYPOINT ["/app/wold"]
+# exec 形式：入口脚本最终 exec 到 wold，PID 1 直接收到 SIGTERM，走 main.go 的优雅关闭。
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -119,6 +119,33 @@ Windows 宿主监听：
 
 另：bookworm 的 apt 源是 deb822 格式的 `/etc/apt/sources.list.d/debian.sources`，**没有** `/etc/apt/sources.list`，最初按老写法替换文件直接报 `can't read`；现已对两种布局都做替换。
 
+## 六·补、NAS 实测后的修订：`/data` 权限自愈（2026-10-21）
+
+极空间实测暴露：纯图形界面部署时，用户把 `/data` 挂到宿主目录，目录属主不受控（root 或管理员 uid），非 root 进程写不进去，报 `unable to open database file: out of memory (14)`（SQLite 的 CANTOPEN 误报文案），而用户没有宿主 shell、文件管理器改不了数字 uid。
+
+修订：镜像改为入口脚本自愈（`docker/entrypoint.sh`）——root 启动 → 属主非 10001 时递归 `chown` → `setpriv` 降权 → `exec` wold。三个场景实测：
+
+```
+1) 污染卷（预置属主 1000:1000 的文件）：
+   日志首行：entrypoint: 修正数据目录属主 /data -> 10001:10001（原属主 uid=1000）
+   health=200；docker top UID=10001；卷内 /data、wol.db、旧文件全部 10001:10001
+
+2) 重启后不重复 chown（目录属主已正确时跳过）：
+   日志中"修正"行计数 = 1；healthy；登录页 200
+
+3) 全新命名卷：Docker 按镜像内 /data 属主初始化，无 chown 日志，直接 healthy
+```
+
+arm64（QEMU）同步复测：healthy，`docker top` UID=10001。
+
+代价说明：容器必须以 root 起步才能自愈（`Config.User` 不再固定为 10001），root 只存在于启动瞬间，业务进程仍以 `10001:10001` 运行；运行层未新增任何包（`setpriv` 属 util-linux，bookworm-slim 自带）。
+
+修订后全量回归：`WOL_PORT=18091 bash deploy/verify-e7.sh` → **PASS 15 / FAIL 0 / SKIP 0**（含污染卷自愈、7-2/7-3 持久化、7-5 口令检索、7-6 arm64 构建、7-8 host 网络）。回归中顺带修掉三个脚本/编排问题：
+
+1. `deploy/docker-compose.yml` 没把 `WOL_PORT` 传进容器，端口覆盖只对 healthcheck 生效、进程仍绑 8080（撞上宿主其它容器的端口映射后 crash 循环）；
+2. 验收脚本的 API 调用改为 `docker exec` 进容器执行：Docker Desktop 的 host 网络宿主侧不可达，宿主 curl 会得到 000（直连）或 502（被系统代理劫持）；
+3. 令牌是内存会话（`internal/auth` 的 `sessions map`），进程重启后按设计失效——7-2/7-3a 须重新登录后再查设备，此前脚本复用旧令牌，测法本身有误。
+
 ## 七、构建与清理
 
 ```bash

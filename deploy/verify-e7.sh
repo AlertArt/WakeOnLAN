@@ -78,13 +78,21 @@ wait_health() {
     return 1
 }
 
-http_code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+# API 一律从容器内发：Docker Desktop 的 host 网络不与 Windows/macOS 宿主共享端口，
+# 宿主 curl 会连不上（000）或被系统代理劫持（502）；真实 Linux 上 exec 同样成立。
+http_code() {
+    docker exec "$CONTAINER" curl -s -o /dev/null -w '%{http_code}' "$@"
+}
 
 login_token() {
-    curl -s -X POST "$BASE/api/login" \
+    docker exec "$CONTAINER" curl -s -X POST "$BASE/api/login" \
         -H 'Content-Type: application/json' \
         --data-binary "{\"password\":\"$WOL_ADMIN_PASSWORD\"}" \
         | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+}
+
+api_get_devices() {
+    docker exec "$CONTAINER" curl -s "$BASE/api/devices" -H "Authorization: Bearer $TOKEN"
 }
 
 # ---------------------------------------------------------------- 7-1
@@ -108,8 +116,8 @@ else
 fi
 
 case "$(docker inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null)" in
-    10001:10001) ok "附加：镜像以非 root 运行（Config.User=10001:10001）" ;;
-    *) bad "附加：镜像未声明非 root 用户（Config.User=$(docker inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null)）" ;;
+    "") ok "附加：入口为自愈脚本（root 修属主后 setpriv 降权），Config.User 不固定" ;;
+    *) bad "附加：镜像固定了 Config.User=$(docker inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null)，权限自愈未启用" ;;
 esac
 
 if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v ping' >/dev/null 2>&1; then
@@ -142,7 +150,10 @@ fi
 docker compose restart >/dev/null 2>&1
 wait_health >/dev/null
 
-if curl -s "$BASE/api/devices" -H "Authorization: Bearer $TOKEN" | grep -qF "$DEVICE_NAME"; then
+# 令牌是内存会话，进程重启后按设计失效；7-2 验的是数据持久化，须重新登录。
+TOKEN=$(login_token)
+
+if api_get_devices | grep -qF "$DEVICE_NAME"; then
     ok "7-2 重启后设备仍在（$DEVICE_NAME 可查到）"
 else
     bad "7-2 重启后设备丢失，卷未生效或数据写进了容器层"
@@ -156,7 +167,9 @@ docker compose down >/dev/null 2>&1
 docker compose up -d >/dev/null 2>&1
 wait_health >/dev/null
 
-if curl -s "$BASE/api/devices" -H "Authorization: Bearer $TOKEN" | grep -qF "$DEVICE_NAME"; then
+TOKEN=$(login_token)   # 重建容器 = 新进程，会话清空，重新登录
+
+if api_get_devices | grep -qF "$DEVICE_NAME"; then
     ok "7-3a 删除并重建容器后设备仍在（数据在卷上，不在容器层）"
 else
     bad "7-3a 重建容器后设备丢失"
@@ -167,7 +180,7 @@ docker compose up -d >/dev/null 2>&1
 wait_health >/dev/null
 
 TOKEN=$(login_token)
-COUNT=$(curl -s "$BASE/api/devices" -H "Authorization: Bearer $TOKEN" | grep -o '"id"' | wc -l | tr -d ' ')
+COUNT=$(api_get_devices | grep -o '"id"' | wc -l | tr -d ' ')
 if [ "$COUNT" = "0" ]; then
     ok "7-3b 删除卷后设备清零（反证数据确实在 wol-data 卷上，而非别处）"
 else
@@ -223,7 +236,10 @@ fi
 section "7-6 arm64 构建"
 
 if docker buildx version >/dev/null 2>&1; then
-    if docker buildx build --platform linux/arm64 -f ../Dockerfile .. >/tmp/e7-arm64.log 2>&1; then
+    # APT_MIRROR 由环境变量传入（如 mirrors.aliyun.com），不设则用官方源。
+    ARM64_ARGS=(--platform linux/arm64 -f ../Dockerfile ..)
+    [ -n "${APT_MIRROR:-}" ] && ARM64_ARGS+=(--build-arg "APT_MIRROR=$APT_MIRROR")
+    if docker buildx build "${ARM64_ARGS[@]}" >/tmp/e7-arm64.log 2>&1; then
         ok "7-6 linux/arm64 交叉构建成功（未在 arm64 实机启动）"
     else
         tail -15 /tmp/e7-arm64.log

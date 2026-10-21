@@ -22,7 +22,7 @@ services:
       WOL_LOG_LEVEL: ${WOL_LOG_LEVEL:-info}
 
     # SQLite 落在命名卷上，不写容器层。
-    # 若改成宿主目录（-v /vol1/docker/wol:/data），该目录属主必须是 10001:10001。
+    # 挂宿主目录（-v /vol1/docker/wol:/data）也可以：属主由容器启动时自动修正。
     volumes:
       - wol-data:/data
 

@@ -21,23 +21,19 @@
 | 基础镜像 | `debian:bookworm-slim` | 需要 `iputils-ping` 的官方包；不用 `alpine` 是因为 busybox ping 参数行为与 iputils 有差异，而 3-5 的结论是按 `iputils` 语义验证的 |
 | 安装包 | `iputils-ping`、`curl`、`ca-certificates`（`--no-install-recommends`） | ping 供 E3 的 ping 类校验；curl 供 HEALTHCHECK；`ca-certificates` 防止将来出网场景失败 |
 | 安装后 | `rm -rf /var/lib/apt/lists/*` | 不把包索引留在层里 |
-| 用户 | `wol`，uid/gid `10001` | 非 root 运行；固定 uid 便于 bind mount 时 `chown` |
+| 用户 | 启动 `root` → 入口脚本降权到 `wol`（uid/gid `10001`） | root 只存在于启动瞬间，用于自愈 `/data` 属主；业务进程始终非 root |
 | 工作目录 | `/app`，含 `wold` 与 `web/` | 与 `httpapi.New(..., "web")` 的相对路径一致 |
 | 端口 | `8080`（`EXPOSE`） | host 网络下仅作文档说明，不参与映射 |
 | 数据目录 | `VOLUME ["/data"]` | SQLite 落在卷上，不进容器层 |
-| 入口 | `ENTRYPOINT ["/app/wold"]`（exec 形式） | PID 1 直接收到 SIGTERM，走 `main.go` 的优雅关闭 |
+| 入口 | `ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]`（exec 形式，脚本最终 `exec` 到 wold） | PID 1 直接收到 SIGTERM，走 `main.go` 的优雅关闭 |
 
 运行层**不得出现**：Go 工具链、`gcc`/`make`/`git`、源码、`docs/`、`.git`、`.env`、`deploy/`、任何测试文件。
 
 ## 二、运行身份与文件系统
 
-- 进程以 uid/gid `10001:10001` 运行，shell 为 `nologin`。
-- `/data` 在镜像内已 `chown 10001:10001`。使用**命名卷**时，Docker 会用镜像内的目录内容与属主初始化空卷，因此开箱即可写。
-- 使用 **bind mount**（如 `-v /srv/wol:/data`）时，宿主目录属主由宿主机决定，非 root 进程会写不进去。部署文档必须给出处理方式：
-
-  ```bash
-  sudo mkdir -p /srv/wol && sudo chown 10001:10001 /srv/wol
-  ```
+- 入口脚本（`docker/entrypoint.sh`）以 root 启动：把 `/data` 属主递归修正为 `10001:10001`（目录属主已是 10001 时跳过），随后 `setpriv --reuid=10001 --regid=10001 --clear-groups` 降权并 `exec` 到 wold。**业务进程始终以 uid/gid `10001:10001` 运行**，`docker top` 可验证。
+- 使用**命名卷**时，Docker 会用镜像内 `/data` 的属主初始化空卷，开箱即可写；入口脚本检测到属主正确时不再执行 chown。
+- 使用 **bind mount**（如 `-v /srv/wol:/data`）时，宿主目录属主不受控——**由入口脚本自动修正，无需在宿主上做任何事**。这是为只能用图形界面部署的 NAS（如极空间）设计的：用户没有宿主 shell，也无法在文件管理器里把属主改成数字 uid 10001。
 
 - 容器内**只有 `/data` 需要可写**。其余路径只读即可，不要求 `read_only: true`（避免与 SQLite 的 WAL 临时文件、`/tmp` 交互时踩坑），但也不允许把业务数据写到 `/data` 之外。
 
