@@ -165,6 +165,58 @@ curl -s http://<NAS的局域网IP>:8080/api/health
 
 真正的验收是让目标机关机，点"唤醒"，看它是否启动——这一步只能用真实设备验证（E8）。
 
+### 2.6 一键验收：两套脚本，别用错
+
+| 脚本 | 验什么 | 在哪跑 | 会不会动数据 |
+| --- | --- | --- | --- |
+| `verify-e7.sh` | 镜像与编排（7-1~7-8：构建、healthy、卷持久化、体积、口令不外泄、arm64、host 网络） | **构建机**（需要 docker build） | **会 `docker compose down -v` 清卷**，只能对测试环境跑 |
+| `smoke.sh` | 部署后的服务能不能用（健康、登录、鉴权、建/删设备、发唤醒包、在线校验） | 任意能访问服务端口的机器，Windows 的 Git Bash 就行 | 只建一台临时设备，跑完自动删除，不碰既有数据 |
+
+构建机上一键验收：
+
+```bash
+cd deploy
+cp .env.example .env                 # 填 WOL_ADMIN_PASSWORD
+WOL_PORT=18091 APT_MIRROR=mirrors.aliyun.com ./verify-e7.sh
+```
+
+Windows 上如果配了系统代理，先清掉再跑，否则 curl 走代理、内网地址会得到 000/502；Docker Desktop 的 host 网络在宿主侧本来就不通，脚本内部已改为 `docker exec` 进容器发请求：
+
+```bash
+env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+  WOL_PORT=18091 APT_MIRROR=mirrors.aliyun.com ./verify-e7.sh
+```
+
+**对 NAS 上已经跑起来的服务做冒烟验收（不需要 SSH，也不需要 Docker）**：
+
+```bash
+# 4 项：健康、登录、无令牌被拒、设备列表可读
+bash smoke.sh --host 192.168.1.10 --password '你的口令'
+
+# 9 项：再加一条龙——建临时设备 → 发唤醒包（202/sent=true）→ 删设备
+bash smoke.sh --host 192.168.1.10 --password '你的口令' --mac AA:BB:CC:DD:EE:FF
+
+# 加上在线校验（目标机是 Windows 时用 tcp，见 2.7）
+bash smoke.sh --host 192.168.1.10 --password '你的口令' \
+  --mac AA:BB:CC:DD:EE:FF --probe tcp:192.168.1.20:445
+```
+
+退出码 `0` = 全部通过。口令也可用环境变量 `WOL_ADMIN_PASSWORD` 传入，不会写进任何文件。`smoke.sh` 随离线包一起发布（`dist/` 目录里就有）。
+
+### 2.7 Windows 目标机为什么 ping 不通，以及校验该怎么配
+
+- Windows 10/11 默认丢弃入站 ICMP（防火墙里的"文件和打印机共享(回显请求 - ICMPv4-In)"规则通常只对专用网络生效，很多机器干脆是关的）。所以 `probe_type=ping` 对 Windows 会一直停在"超时未响应"。
+- **这只影响"唤醒之后判断有没有上线"，不影响唤醒本身**：魔术包是链路层广播帧，由网卡在关机/休眠状态下接收，不经过 Windows 防火墙。
+- 三种配法，按推荐排序：
+
+| 目标机 | `probe_type` | `probe_value` | 说明 |
+| --- | --- | --- | --- |
+| Windows（开了远程桌面/文件共享） | `tcp` | `192.168.1.20:3389`（RDP）或 `:445`（SMB） | 端口在监听就能判断，最可靠 |
+| 任意设备 | `none` | 空 | 只发包不校验，界面显示"未配置"，最稳 |
+| 想用 ping | `ping` | `192.168.1.20` | 需在目标机放行 ICMPv4 入站，且 IP 固定 |
+
+- 探测目标是**唤醒前**记录的 IP：目标机由 DHCP 换了地址，探测必然失败。给目标机设 DHCP 保留或静态 IP。
+
 ---
 
 ## 3. 配置项
@@ -206,6 +258,8 @@ docker compose -f docker-compose.nas.yml up -d --force-recreate
 | `unhealthy` 但进程在跑 | `WOL_PORT` 改过但健康检查仍用旧端口；两处要一致 |
 | 页面能开，唤醒返回 202 但设备不开机 | 广播地址填成了设备 IP / 网络不是 host / 目标机未开 WOL |
 | 校验直接"失败"，提示找不到 ping | 用了自己改的镜像，丢了 `iputils-ping` |
+| 校验一直"超时未响应" | 目标机是 Windows 且屏蔽了 ICMP：把 `probe_type` 改 `tcp`、`probe_value` 填 `IP:445`（或 `:3389`）；或目标机 DHCP 换了 IP；或目标机真没开机 |
+| `smoke.sh` 报 000 / 502 | 地址或端口不对；Windows 上系统代理劫持了 curl（脚本已带 `--noproxy`），再检查是否同网段、NAS 防火墙是否放行端口 |
 | 给容器加了 `no-new-privileges: true` 后 ping 全失败 | 该选项剥夺 `cap_net_raw`，不要加 |
 | 手机打不开 | 防火墙未放行端口，或手机不在同一网段 |
 | 导入镜像报格式错误（找不到 `manifest.json`） | tar 是 OCI 布局，老版本 Docker 不认；用 `package-offline.sh` 重新打包，它负责转换 |

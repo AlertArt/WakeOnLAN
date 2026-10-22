@@ -112,6 +112,8 @@ gzip -c "$OUT/$TAR" > "$OUT/$TAR.gz"
 
 cp "$ROOT/deploy/docker-compose.nas.yml" "$OUT/"
 cp "$ROOT/deploy/.env.example" "$OUT/.env.example"
+cp "$ROOT/deploy/smoke.sh" "$OUT/smoke.sh"
+chmod +x "$OUT/smoke.sh"
 
 cat > "$OUT/安装说明.txt" <<EOF
 局域网唤醒（WakeOnLAN）离线镜像包
@@ -140,12 +142,23 @@ cat > "$OUT/安装说明.txt" <<EOF
 浏览器打开 http://<NAS的局域网IP>:8080，输入口令登录。
 另可执行：curl -s http://<NAS的局域网IP>:8080/api/health
 
+五、一键验收（不需要 SSH，也不需要 Docker）
+在任意能访问 NAS 的电脑上执行（Windows 用 Git Bash）：
+  bash smoke.sh --host <NAS的IP> --password '<口令>'
+  bash smoke.sh --host <NAS的IP> --password '<口令>' --mac AA:BB:CC:DD:EE:FF
+退出码 0 = 健康、登录、鉴权、建删设备、唤醒包发送全部正常；
+脚本只建一台临时设备，跑完自动删除，不动既有设备。
+
+注意：Windows 10/11 默认屏蔽入站 ping，校验别用 ping——
+在界面里把"校验"设为 TCP，填 目标IP:445 或 目标IP:3389；或设为"不校验"。
+（唤醒本身不受目标机防火墙影响，魔术包由网卡直接接收。）
+
 注意：网络必须是 host 模式，桥接模式下唤醒包发不出局域网。
 详细说明见仓库 deploy/README.md。
 EOF
 
 echo "== 校验和 =="
-(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example > SHA256SUMS && cat SHA256SUMS)
+(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh > SHA256SUMS && cat SHA256SUMS)
 
 echo
 echo "完成。产物目录：$OUT"
