@@ -25,10 +25,12 @@ const (
 
 // ProbeStatus 是一台设备的状态快照。
 // CheckedAt 为零值表示从未产生过终态结论。
+// ProbeType 供调用方区分「主动探测」与「心跳上报」：后者的结论由最近心跳时间推算。
 type ProbeStatus struct {
 	DeviceID  int64
 	Status    string
 	Message   string
+	ProbeType string
 	CheckedAt time.Time
 }
 
@@ -80,7 +82,7 @@ func (d *DB) setProbeStatus(ctx context.Context, deviceID int64, status, message
 // 无设备时返回空切片而非 nil，保证 JSON 序列化为 []。
 func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, probe_status, probe_message, probe_checked_at FROM device ORDER BY id`)
+		`SELECT id, probe_status, probe_message, probe_type, probe_checked_at FROM device ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("查询校验状态失败: %w", err)
 	}
@@ -92,7 +94,7 @@ func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 			ps      ProbeStatus
 			checked string
 		)
-		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &checked); err != nil {
+		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &ps.ProbeType, &checked); err != nil {
 			return nil, fmt.Errorf("读取校验状态失败: %w", err)
 		}
 		if checked != "" {

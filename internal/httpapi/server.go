@@ -61,6 +61,9 @@ func (s *Server) Routes() http.Handler {
 	// 公开路径：健康检查必须免鉴权，否则容器 HEALTHCHECK 永远失败（E4 禁止事项 8）。
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	// 心跳上报同样是公开路径：目标机上的客户端没有管理口令，
+	// 鉴权靠每台设备独立的心跳密钥（probe_value），见 heartbeat.go。
+	mux.HandleFunc("POST /api/heartbeat", s.handleHeartbeat)
 
 	// guard 把受保护接口包上令牌校验。逐条登记而非按前缀拦截，
 	// 好处是"哪些接口公开"在路由表上一眼可见，不依赖路径匹配的隐含规则。

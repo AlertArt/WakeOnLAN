@@ -196,9 +196,13 @@ bash smoke.sh --host 192.168.1.10 --password '你的口令'
 # 9 项：再加一条龙——建临时设备 → 发唤醒包（202/sent=true）→ 删设备
 bash smoke.sh --host 192.168.1.10 --password '你的口令' --mac AA:BB:CC:DD:EE:FF
 
-# 加上在线校验（目标机是 Windows 时用 tcp，见 2.7）
+# 加上在线校验（目标机是 Windows 时优先 tcp 或心跳，见 2.7）
 bash smoke.sh --host 192.168.1.10 --password '你的口令' \
   --mac AA:BB:CC:DD:EE:FF --probe tcp:192.168.1.20:445
+
+# 验证心跳链路：临时设备 + 模拟一次心跳上报 + 状态应为 online
+bash smoke.sh --host 192.168.1.10 --password '你的口令' \
+  --mac AA:BB:CC:DD:EE:FF --probe heartbeat
 ```
 
 退出码 `0` = 全部通过。口令也可用环境变量 `WOL_ADMIN_PASSWORD` 传入，不会写进任何文件。`smoke.sh` 随离线包一起发布（`dist/` 目录里就有）。
@@ -212,10 +216,12 @@ bash smoke.sh --host 192.168.1.10 --password '你的口令' \
 | 目标机 | `probe_type` | `probe_value` | 说明 |
 | --- | --- | --- | --- |
 | Windows（开了远程桌面/文件共享） | `tcp` | `192.168.1.20:3389`（RDP）或 `:445`（SMB） | 端口在监听就能判断，最可靠 |
+| **Windows（推荐，零端口依赖）** | `heartbeat` | 16 位以上随机密钥 | 目标机跑 `client/heartbeat.ps1` 定时上报，详见 `client/README.md` |
 | 任意设备 | `none` | 空 | 只发包不校验，界面显示"未配置"，最稳 |
 | 想用 ping | `ping` | `192.168.1.20` | 需在目标机放行 ICMPv4 入站，且 IP 固定 |
 
-- 探测目标是**唤醒前**记录的 IP：目标机由 DHCP 换了地址，探测必然失败。给目标机设 DHCP 保留或静态 IP。
+- 心跳方式的细节（公开接口的鉴权、离线推算规则、任务计划常驻配置）见 `docs/heartbeat-contract.md` 与 `client/README.md`；`heartbeat.ps1` 已随离线包放在 `client/` 目录。
+- 探测目标是**唤醒前**记录的 IP：目标机由 DHCP 换了地址，探测必然失败。给目标机设 DHCP 保留或静态 IP（心跳方式同样要求设备里记录的 MAC 与目标机一致）。
 
 ---
 

@@ -4,7 +4,7 @@
 
 services:
   wold:
-    image: wol:1.0.0
+    image: wol:1.1.0
     container_name: wold
 
     # 必须 host：WOL 是 UDP 广播，桥接网络下包只落在 docker0，设备不会开机，

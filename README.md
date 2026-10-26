@@ -46,12 +46,16 @@ go test ./...
 
 状态取值：`pending` / `checking` / `online` / `timeout` / `failed`。轮询上限 120 秒、间隔 5 秒，均为常量，不提供配置。
 
+状态取值：`pending` / `checking` / `online` / `timeout` / `failed`。轮询上限 120 秒、间隔 5 秒，均为常量，不提供配置。
+
 `ping` 类型校验依赖系统 `ping` 命令（tcp 类型不依赖）。容器镜像必须包含 ping，否则这类校验会明确失败并说明原因。
+
+第四种校验方式是 `heartbeat`（心跳上报）：目标机上的客户端每 60 秒调一次 `POST /api/heartbeat` 上报"我还活着"，3 分钟没有心跳即判离线。它不依赖目标机开放任何端口——Windows 默认丢弃入站 ping，推荐用这种方式判断在线。契约见 `docs/heartbeat-contract.md`，客户端见 `client/`。
 
 浏览器打开 `http://127.0.0.1:8080/`：未登录会停在登录页，输入口令后进入设备列表页。页面上可添加/编辑/删除设备（弹层操作）、一键唤醒并自动轮询校验结果（已上线 / 超时未响应 / 校验失败）；令牌过期会自动带回登录页。手机浏览器里可"添加到主屏幕"当作独立应用使用（局域网 HTTP 地址下 Service Worker 不生效，退化为普通书签；要完整 PWA 需 HTTPS，属部署决策）。
 
-接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）、`docs/E4-contract.md`（鉴权与限流）、`docs/E5-contract.md`（前端页面与令牌存放）、`docs/E6-contract.md`（PWA 清单与缓存策略）、`docs/E7-contract.md`（镜像规格、网络模式与部署口径）。
-各环节验收记录：`docs/E*-acceptance.md`；界面截图见 `docs/e5-shots/`、`docs/e6-shots/`。
+接口契约：`docs/E1-contract.md`（设备 CRUD）、`docs/E2-contract.md`（唤醒）、`docs/E3-contract.md`（校验与状态）、`docs/E4-contract.md`（鉴权与限流）、`docs/E5-contract.md`（前端页面与令牌存放）、`docs/E6-contract.md`（PWA 清单与缓存策略）、`docs/E7-contract.md`（镜像规格、网络模式与部署口径）、`docs/heartbeat-contract.md`（心跳在线校验与客户端协议）。
+各环节验收记录：`docs/E*-acceptance.md`、`docs/heartbeat-acceptance.md`；界面截图见 `docs/e5-shots/`、`docs/e6-shots/`。
 
 ## 部署（Docker）
 
@@ -73,8 +77,8 @@ docker compose ps             # STATUS 列出现 (healthy) 即就绪
 
 1. **网络模式是 `host`，不是可选项。** WOL 是 UDP 广播，Docker 默认桥接网络下广播包只会落在 `docker0` 虚拟网桥上，永远到不了物理局域网——此时接口照样返回 `202`、日志照样无错误、设备就是不开机。Docker Desktop（macOS/Windows）会把 `host` 语义改写到虚拟机内，同样发不出广播，所以部署机必须是 Linux。
 2. **端口直接占用宿主端口**，没有 `ports` 映射也没有反向代理：端口冲突改 `WOL_PORT`；反过来说，口令是唯一的门，务必设置得足够长。
-3. **数据在命名卷 `wol-data` 上**，删容器、重建容器都不丢。若改用 bind mount（`-v /srv/wol:/data`），宿主目录需先 `sudo chown 10001:10001 /srv/wol`，否则非 root 进程写不进去。
-4. **镜像内含 `iputils-ping`**：ping 类校验依赖系统命令，缺了会直接判"校验失败"。镜像还以非 root（uid 10001）运行，因此不要给容器加 `no-new-privileges`——那会破坏 ping 所需的文件能力。
+3. **数据在命名卷 `wol-data` 上**，删容器、重建容器都不丢。用 bind mount（`-v /srv/wol:/data`）也不必预改属主：容器启动时会自动把数据目录修正为 10001:10001 再降权运行（见 `docker/entrypoint.sh`）。
+4. **镜像内含 `iputils-ping`**：ping 类校验依赖系统命令，缺了会直接判"校验失败"。业务进程以非 root（uid 10001）运行（启动瞬间以 root 修完属主即降权），因此不要给容器加 `no-new-privileges`——那会破坏 ping 所需的文件能力。
 
 一键验收（在装有 Docker 的机器上执行，逐项打印 7-1~7-8 的 PASS/FAIL）：
 
@@ -106,7 +110,7 @@ docker pull docker.1ms.run/library/debian:bookworm-slim
 docker tag  docker.1ms.run/library/debian:bookworm-slim debian:bookworm-slim
 
 # 2) apt 装不上 ping：切换 Debian 源（不填则用官方源）
-docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.0.0 .
+docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.1.0 .
 ```
 
 实测结论见 `docs/E7-acceptance.md`（7-1~7-7 全部通过，7-8 广播包已在宿主网卡抓到）。
@@ -133,8 +137,9 @@ internal/config/     环境变量解析与校验
 internal/store/      SQLite 连接、建表迁移、device 表读写、校验状态（只留最近一次）
 internal/httpapi/    路由、中间件、健康检查、设备 CRUD、唤醒、校验与状态（接口一律在此登记）
 internal/wol/        魔术包构造与发送（纯函数 + 单次 UDP 发送，不重试不并发）
-internal/probe/      唤醒结果校验：Ping / TCP 探测 + 进程内任务生命周期（无队列）
+internal/probe/      唤醒结果校验：Ping / TCP 探测、心跳规则与阈值 + 进程内任务生命周期（无队列）
 internal/auth/       单口令认证：令牌签发/校验/吊销、按 IP 的失败限流（仅标准库）
+client/              Windows 心跳客户端（PowerShell）：定时上报在线状态，见 client/README.md
 web/                 静态前端：登录页 + 设备列表页 + 弹层、manifest、Service Worker、图标（原生实现，零依赖零构建）
 Dockerfile           多阶段构建：静态编译（amd64/arm64）→ debian-slim 运行层（含 ping、非 root）
 .dockerignore        构建上下文白名单化：源码与 web/ 进，.env/.git/docs/数据一律不进

@@ -7,7 +7,8 @@
 // 禁止：离线队列、后台同步、推送（6-5 反向项，出现即扩大开发）。
 'use strict';
 
-var CACHE = 'wol-static-v1';
+// 改过壳资源（devices.js/index.html）必须升版本，否则老缓存会继续生效（E7 禁止事项 12）。
+var CACHE = 'wol-static-v2';
 
 // 壳资源。注意：这里绝不能出现任何 /api/ 路径。
 var SHELL = [

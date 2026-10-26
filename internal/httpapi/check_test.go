@@ -47,10 +47,13 @@ func (f *fakeChecker) Start(id int64, probeType, probeValue string) error {
 	return f.err
 }
 
-// fakeStatusStore 提供状态查询。
+// fakeStatusStore 提供状态查询与心跳写入。
 type fakeStatusStore struct {
-	items []store.ProbeStatus
-	err   error
+	items   []store.ProbeStatus
+	err     error
+	markErr error
+	// onlineIDs 记录被标记为已上线的设备，供心跳用例断言。
+	onlineIDs []int64
 }
 
 func (f *fakeStatusStore) ListProbeStatus(context.Context) ([]store.ProbeStatus, error) {
@@ -58,6 +61,14 @@ func (f *fakeStatusStore) ListProbeStatus(context.Context) ([]store.ProbeStatus,
 		return nil, f.err
 	}
 	return f.items, nil
+}
+
+func (f *fakeStatusStore) MarkOnline(_ context.Context, deviceID int64) error {
+	if f.markErr != nil {
+		return f.markErr
+	}
+	f.onlineIDs = append(f.onlineIDs, deviceID)
+	return nil
 }
 
 func newFakeStatusStore() *fakeStatusStore { return &fakeStatusStore{items: []store.ProbeStatus{}} }

@@ -12,11 +12,19 @@
   var POLL_INTERVAL_MS = 5000;
   // 服务端上限 120 秒，客户端多留 10 秒；超限即停止轮询，交给"刷新"。
   var CHECK_LIMIT_MS = 130000;
+  // 心跳设备的等待窗口：客户端每 60 秒上报一次，服务端 180 秒判离线，
+  // 这里多留 20 秒余量，覆盖开机 + 客户端启动的时间。
+  var HEARTBEAT_WAIT_MS = 200000;
   var TERMINAL = { online: true, timeout: true, failed: true };
 
   var PROBE_FIELD = {
     ping: { label: 'Ping 目标', placeholder: '192.168.1.10', hint: '填写设备在局域网内的 IPv4 地址。' },
     tcp: { label: 'TCP 目标', placeholder: '192.168.1.10:22', hint: '主机:端口，端口用于判断服务是否已经启动。' },
+    heartbeat: {
+      label: '心跳密钥',
+      placeholder: '至少 16 位，例如 hb-7f3c9a2d5e8b1f4c',
+      hint: '目标机上的客户端用这把密钥上报心跳；每 60 秒一次，超过 3 分钟没有心跳即判离线。',
+    },
   };
 
   var dom = {
@@ -55,6 +63,7 @@
     statuses: new Map(), // device_id -> /api/status 的单项
     phase: new Map(), // device_id -> 'sending' | 'checking'，只存在于本页面内存
     since: new Map(), // device_id -> 校验开始毫秒数
+    watch: new Map(), // device_id -> 等待心跳的截止毫秒数
     notes: new Map(), // device_id -> 本地补充说明（不写入服务端）
     pollTimer: null,
     loaded: false,
@@ -90,6 +99,7 @@
   function probeText(dv) {
     if (dv.probe_type === 'none') return '未配置';
     if (dv.probe_type === 'ping') return 'Ping ' + dv.probe_value;
+    if (dv.probe_type === 'heartbeat') return '心跳上报';
     return 'TCP ' + dv.probe_value;
   }
 
@@ -100,10 +110,13 @@
     return row;
   }
 
-  function chip(phase, status) {
+  function chip(phase, status, dv) {
     var meta;
     if (phase === 'sending') meta = { label: '发送中', tone: 'busy' };
-    else if (status && statusMeta[status.status]) meta = statusMeta[status.status];
+    // 心跳设备没有"校验中"这一说，未收到心跳时显示「等待心跳」，别让它看起来像从未配置。
+    else if (dv && dv.probe_type === 'heartbeat' && (!status || status.status === 'pending')) {
+      meta = { label: '等待心跳', tone: 'muted' };
+    } else if (status && statusMeta[status.status]) meta = statusMeta[status.status];
     else meta = { label: '未校验', tone: 'muted' };
 
     var node = el('span', 'chip chip--' + meta.tone);
@@ -130,7 +143,7 @@
 
     var head = el('div', 'card-head');
     head.appendChild(el('h2', 'card-title', dv.name));
-    head.appendChild(chip(phase, status));
+    head.appendChild(chip(phase, status, dv));
     node.appendChild(head);
 
     var facts = el('div', 'facts');
@@ -206,7 +219,20 @@
       }
     });
 
-    if (state.since.size === 0) stopPolling();
+    // 心跳设备：等到 online 即收工；窗口内一直是 pending/checking 就提示客户端可能没起来。
+    state.watch.forEach(function (deadline, id) {
+      var latest = state.statuses.get(id);
+      if (latest && latest.status === 'online') {
+        state.watch.delete(id);
+        return;
+      }
+      if (now > deadline) {
+        state.watch.delete(id);
+        state.notes.set(id, '3 分钟内未收到心跳，请确认目标机已开机且心跳客户端正在运行');
+      }
+    });
+
+    if (state.since.size === 0 && state.watch.size === 0) stopPolling();
   }
 
   async function poll() {
@@ -275,7 +301,23 @@
       return;
     }
 
+    // 心跳设备不能主动探测，只能等开机后的客户端自己上报。
+    if (dv.probe_type === 'heartbeat') {
+      state.phase.delete(id);
+      state.notes.set(id, '唤醒包已发送；正在等待设备心跳上报（最长 3 分钟）');
+      startHeartbeatWatch(id);
+      render();
+      notice('唤醒包已发送，等待设备心跳上报中…', 'info');
+      return;
+    }
+
     await startCheck(id);
+  }
+
+  // 只等 online，不等 timeout：刚唤醒的机器在客户端起来之前，服务端本来就该报超时。
+  function startHeartbeatWatch(id) {
+    state.watch.set(id, Date.now() + HEARTBEAT_WAIT_MS);
+    startPolling();
   }
 
   async function startCheck(id) {
@@ -371,6 +413,9 @@
     }
     if (body.probe_type !== 'none' && !body.probe_value) {
       return editorError('请填写校验目标，或将校验方式改为「不校验」');
+    }
+    if (body.probe_type === 'heartbeat' && body.probe_value.length < 16) {
+      return editorError('心跳密钥至少 16 位，建议用一串随机字符');
     }
 
     var isEdit = Boolean(state.editingId);

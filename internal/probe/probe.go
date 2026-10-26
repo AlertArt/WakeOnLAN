@@ -40,6 +40,9 @@ func ValidateTarget(probeType, value string) error {
 		return validatePingTarget(value)
 	case "tcp":
 		return validateTCPTarget(value)
+	case "heartbeat":
+		// 心跳没有"探测目标"，probe_value 在这里存的是设备的上报密钥。
+		return ValidateHeartbeatSecret(value)
 	default:
 		return fmt.Errorf("%w: 不支持的校验类型 %q", ErrInvalidTarget, probeType)
 	}
@@ -51,6 +54,11 @@ func ValidateTarget(probeType, value string) error {
 func Probe(ctx context.Context, probeType, value string) error {
 	if err := ValidateTarget(probeType, value); err != nil {
 		return err
+	}
+	if probeType == "heartbeat" {
+		// 心跳由客户端上报，服务端没有可执行的探测动作。
+		// 上层（/api/devices/{id}/check）已拒绝该类型，这里是最后一道防线。
+		return fmt.Errorf("%w: 心跳模式不发起主动探测", ErrInvalidTarget)
 	}
 	if probeType == "ping" {
 		return probeICMP(ctx, value)

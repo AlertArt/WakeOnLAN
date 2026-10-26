@@ -11,6 +11,7 @@
 #   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF      # 再加：建/删设备 + 发唤醒包
 #   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --probe tcp:192.168.1.20:445
 #   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --probe ping:192.168.1.20
+#   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --probe heartbeat   # 验心跳链路
 #
 # 口令取自 --password 或环境变量 WOL_ADMIN_PASSWORD；不写入任何文件。
 # 退出码：0 = 全部通过，1 = 有失败项。
@@ -39,7 +40,7 @@ ok() { PASS=$((PASS + 1)); SUMMARY+=("PASS  $1"); printf '  %s  %s\n' "$(green P
 bad() { FAIL=$((FAIL + 1)); SUMMARY+=("FAIL  $1"); printf '  %s  %s\n' "$(red FAIL)" "$1"; }
 die() { printf '\n%s %s\n' "$(red '[中止]')" "$1"; exit 1; }
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -150,8 +151,9 @@ section "4 建临时设备并删除（用临时数据，不动既有设备）"
 PROBE_TYPE="$PROBE"; PROBE_VALUE=""
 case "$PROBE" in
     none) ;;
+    heartbeat) PROBE_TYPE="heartbeat"; PROBE_VALUE="smoke-$(date +%s)-$RANDOM$RANDOM" ;;
     ping:*|tcp:*) PROBE_TYPE="${PROBE%%:*}"; PROBE_VALUE="${PROBE#*:}" ;;
-    *) die "--probe 只支持 none / ping:IP / tcp:主机:端口，收到：$PROBE" ;;
+    *) die "--probe 只支持 none / ping:IP / tcp:主机:端口 / heartbeat，收到：$PROBE" ;;
 esac
 
 NAME="SMOKE-$(date +%m%d-%H%M%S)"
@@ -185,7 +187,27 @@ fi
 
 section "6 在线校验（可选）"
 
-if [ "$PROBE_TYPE" = "none" ]; then
+if [ "$PROBE_TYPE" = "heartbeat" ]; then
+    # 心跳模式下服务端不主动探测，这里模拟客户端上报一次。
+    HB_CODE="$("${CURL[@]}" -o /tmp/smoke-hb.json -w '%{http_code}' \
+        -X POST "$BASE/api/heartbeat" -H 'Content-Type: application/json' \
+        -d "{\"mac\":\"$MAC\",\"secret\":\"$PROBE_VALUE\"}")"
+    HB_BODY="$(cat /tmp/smoke-hb.json 2>/dev/null)"
+    if [ "$HB_CODE" = "200" ] && printf '%s' "$HB_BODY" | grep -q '"status":"online"'; then
+        ok "心跳上报被接受（HTTP 200，$HB_BODY）"
+    else
+        bad "心跳上报失败：HTTP $HB_CODE，响应 ${HB_BODY:-空}"
+    fi
+
+    # 再确认状态接口把该设备算成 online。
+    STATE="$("${CURL[@]}" "$BASE/api/status" -H "Authorization: Bearer $TOKEN" \
+        | tr '}' '\n' | grep "\"device_id\":$TMP_ID" | json_str status)"
+    if [ "$STATE" = "online" ]; then
+        ok "状态接口显示 online（心跳链路打通）"
+    else
+        bad "状态接口显示 ${STATE:-空}，期望 online"
+    fi
+elif [ "$PROBE_TYPE" = "none" ]; then
     printf '  跳过：校验类型为 none（只发唤醒包，不判断目标是否上线）\n'
     printf '  说明：Win10/11 默认屏蔽入站 ICMP，用 ping 校验会一直"超时未响应"；\n'
     printf '        改用 --probe tcp:192.168.1.20:445（SMB）或 :3389（远程桌面）更可靠。\n'

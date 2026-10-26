@@ -8,5 +8,6 @@ Dockerfile text eol=lf
 # 文档与 .env 样例同样统一 LF：仓库存 LF，检出到 Windows 也是 LF，
 # 避免 diff 里出现整文件级噪声，也避免离线包里的说明文本混入 \r。
 *.md         text eol=lf
+*.ps1        text eol=lf
 *.example    text eol=lf
 .gitattributes text eol=lf

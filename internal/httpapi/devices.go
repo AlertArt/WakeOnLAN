@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"wol/internal/probe"
 	"wol/internal/store"
 )
 
@@ -54,9 +55,10 @@ type deviceRequest struct {
 }
 
 const (
-	probeNone = "none"
-	probePing = "ping"
-	probeTCP  = "tcp"
+	probeNone      = "none"
+	probePing      = "ping"
+	probeTCP       = "tcp"
+	probeHeartbeat = "heartbeat"
 
 	defaultBroadcastPort = 9
 	maxNameLen           = 32
@@ -225,8 +227,15 @@ func toStoreDevice(w http.ResponseWriter, req deviceRequest) (store.Device, bool
 			writeError(w, http.StatusBadRequest, "invalid_probe", "校验方式为 tcp 时，目标应为主机:端口，例如 192.168.1.10:22")
 			return store.Device{}, false
 		}
+	case probeHeartbeat:
+		// 心跳模式下 probe_value 存的是上报密钥，由客户端在请求里带上。
+		if err := probe.ValidateHeartbeatSecret(probeValue); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_probe",
+				"心跳方式需要在「心跳密钥」里填写 16–64 位字符（字母、数字、下划线、连字符）")
+			return store.Device{}, false
+		}
 	default:
-		writeError(w, http.StatusBadRequest, "invalid_probe", "校验方式只能是 none、ping 或 tcp")
+		writeError(w, http.StatusBadRequest, "invalid_probe", "校验方式只能是 none、ping、tcp 或 heartbeat")
 		return store.Device{}, false
 	}
 

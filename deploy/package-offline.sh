@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.1.0}"
 ARCH="amd64"
 APT_MIRROR=""
 SKIP_BUILD=0
@@ -115,6 +115,11 @@ cp "$ROOT/deploy/.env.example" "$OUT/.env.example"
 cp "$ROOT/deploy/smoke.sh" "$OUT/smoke.sh"
 chmod +x "$OUT/smoke.sh"
 
+# Windows 心跳客户端随包分发：目标机无法访问 GitHub 时也能直接拷过去用。
+mkdir -p "$OUT/client"
+cp "$ROOT/client/heartbeat.ps1" "$OUT/client/heartbeat.ps1"
+cp "$ROOT/client/README.md" "$OUT/client/README.md"
+
 cat > "$OUT/安装说明.txt" <<EOF
 局域网唤醒（WakeOnLAN）离线镜像包
 版本 $VERSION / 平台 linux/$ARCH
@@ -150,15 +155,25 @@ cat > "$OUT/安装说明.txt" <<EOF
 脚本只建一台临时设备，跑完自动删除，不动既有设备。
 
 注意：Windows 10/11 默认屏蔽入站 ping，校验别用 ping——
-在界面里把"校验"设为 TCP，填 目标IP:445 或 目标IP:3389；或设为"不校验"。
+三种可选：TCP（填 目标IP:445 或 目标IP:3389）、心跳上报（见下）、不校验。
 （唤醒本身不受目标机防火墙影响，魔术包由网卡直接接收。）
+
+六、Windows 目标机推荐用心跳（无需目标机开放任何端口）
+1) 网页里编辑设备 → 校验方式选"心跳上报" → 心跳密钥填 16 位以上随机字符
+2) 把 client\heartbeat.ps1 拷到目标机，先验一次：
+   powershell -NoProfile -ExecutionPolicy Bypass -File C:\wol\heartbeat.ps1 ^
+     -Server http://<NAS的IP>:8080 -Secret <密钥> -Once
+3) 设成开机常驻（管理员命令行）：
+   schtasks /Create /TN "WOL-Heartbeat" /SC ONSTART /RU SYSTEM /RL HIGHEST /F ^
+     /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\wol\heartbeat.ps1 -Server http://<NAS的IP>:8080 -Secret <密钥>"
+   客户端每 60 秒上报一次，3 分钟没有心跳即判离线；详见 client\README.md。
 
 注意：网络必须是 host 模式，桥接模式下唤醒包发不出局域网。
 详细说明见仓库 deploy/README.md。
 EOF
 
 echo "== 校验和 =="
-(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh > SHA256SUMS && cat SHA256SUMS)
+(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh client/heartbeat.ps1 > SHA256SUMS && cat SHA256SUMS)
 
 echo
 echo "完成。产物目录：$OUT"
