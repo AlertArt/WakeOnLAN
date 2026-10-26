@@ -92,7 +92,18 @@ POST /api/heartbeat
 
 ## 八、客户端
 
-`client/heartbeat.ps1`（Windows PowerShell 5.1+）：
+两个客户端，按场景选：
+
+**`client/WolHeartbeat/`（Avalonia 桌面程序，推荐）**——单文件 `WolHeartbeat.exe`（自带 .NET 运行时，免安装）：
+
+- 界面填服务器地址 / 密钥 / MAC（自动识别物理网卡）/ 间隔，保存即常驻上报；
+- 配置存程序目录 `config.json`，日志存程序目录 `logs\heartbeat-日期.log`（按天分文件，超 2 MB 轮转，保留 7 天；程序目录不可写时退到 `%LOCALAPPDATA%\WolHeartbeat\logs` 并在界面提示）；
+- 「登录 Windows 时自动启动」写 HKCU 的 Run 项（无需管理员）；「启动程序即开始上报」免人工点击；
+- 单实例保护：重复启动自动退出，避免双重上报；
+- `--once` 无界面模式：只上报一次，退出码 0/1/2（成功/失败/配置有误），供验收脚本与排障使用；
+- HttpClient 明确禁用系统代理（`UseProxy = false`）——心跳走局域网直连，系统代理会把内网地址变成 502/407。
+
+**`client/heartbeat.ps1`（Windows PowerShell 5.1+）**——无人值守备选：
 
 ```powershell
 # 先验一次配置
@@ -105,5 +116,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File heartbeat.ps1 `
 ```
 
 - 只发起出站 HTTP 请求，**不需要在目标机防火墙上开任何入站规则**。
-- 不是 Windows 服务、不装驱动；常驻靠任务计划程序，见 `client/README.md`。
+- 两者都不是 Windows 服务、不装驱动；脚本常驻靠任务计划程序（开机即跑、无需登录），GUI 常驻靠 Run 项（登录后启动），详见 `client/README.md`。
 - 上报失败按 15 秒重试（不必等满一个周期），并在日志里区分 401（密钥/MAC 不对）、404（地址不对）与其他网络错误。

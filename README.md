@@ -139,7 +139,7 @@ internal/httpapi/    路由、中间件、健康检查、设备 CRUD、唤醒、
 internal/wol/        魔术包构造与发送（纯函数 + 单次 UDP 发送，不重试不并发）
 internal/probe/      唤醒结果校验：Ping / TCP 探测、心跳规则与阈值 + 进程内任务生命周期（无队列）
 internal/auth/       单口令认证：令牌签发/校验/吊销、按 IP 的失败限流（仅标准库）
-client/              Windows 心跳客户端（PowerShell）：定时上报在线状态，见 client/README.md
+client/              Windows 心跳客户端：WolHeartbeat/（Avalonia 桌面程序）与 heartbeat.ps1（无界面脚本），见 client/README.md
 web/                 静态前端：登录页 + 设备列表页 + 弹层、manifest、Service Worker、图标（原生实现，零依赖零构建）
 Dockerfile           多阶段构建：静态编译（amd64/arm64）→ debian-slim 运行层（含 ping、非 root）
 .dockerignore        构建上下文白名单化：源码与 web/ 进，.env/.git/docs/数据一律不进

@@ -116,9 +116,16 @@ cp "$ROOT/deploy/smoke.sh" "$OUT/smoke.sh"
 chmod +x "$OUT/smoke.sh"
 
 # Windows 心跳客户端随包分发：目标机无法访问 GitHub 时也能直接拷过去用。
+# GUI 版（Avalonia）需要先 dotnet publish（见 client/README.md），有产物就带上。
 mkdir -p "$OUT/client"
 cp "$ROOT/client/heartbeat.ps1" "$OUT/client/heartbeat.ps1"
 cp "$ROOT/client/README.md" "$OUT/client/README.md"
+if [ -f "$ROOT/client/WolHeartbeat/publish/WolHeartbeat.exe" ]; then
+    cp "$ROOT/client/WolHeartbeat/publish/WolHeartbeat.exe" "$OUT/client/WolHeartbeat.exe"
+    echo "已附带 GUI 客户端 client/WolHeartbeat.exe"
+else
+    echo "提示：未找到 client/WolHeartbeat/publish/WolHeartbeat.exe，跳过 GUI 客户端（只带脚本版）"
+fi
 
 cat > "$OUT/安装说明.txt" <<EOF
 局域网唤醒（WakeOnLAN）离线镜像包
@@ -160,10 +167,14 @@ cat > "$OUT/安装说明.txt" <<EOF
 
 六、Windows 目标机推荐用心跳（无需目标机开放任何端口）
 1) 网页里编辑设备 → 校验方式选"心跳上报" → 心跳密钥填 16 位以上随机字符
-2) 把 client\heartbeat.ps1 拷到目标机，先验一次：
+2) 桌面客户端（推荐）：把 client\WolHeartbeat.exe 拷到目标机如 C:\wol\，双击运行，
+   填服务器地址与密钥，点"自动识别"取 MAC，点"保存并开始上报"即可；
+   勾选"登录 Windows 时自动启动"可常驻。配置和日志都在 exe 所在目录。
+   命令行验证：C:\wol\WolHeartbeat.exe --once --server http://<NAS的IP>:8080 --Secret <密钥>
+3) 无界面场景（服务器 / 不想装 GUI）：用 client\heartbeat.ps1，先验一次：
    powershell -NoProfile -ExecutionPolicy Bypass -File C:\wol\heartbeat.ps1 ^
      -Server http://<NAS的IP>:8080 -Secret <密钥> -Once
-3) 设成开机常驻（管理员命令行）：
+   开机常驻（管理员命令行，开机即跑、无需登录）：
    schtasks /Create /TN "WOL-Heartbeat" /SC ONSTART /RU SYSTEM /RL HIGHEST /F ^
      /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\wol\heartbeat.ps1 -Server http://<NAS的IP>:8080 -Secret <密钥>"
    客户端每 60 秒上报一次，3 分钟没有心跳即判离线；详见 client\README.md。
@@ -173,7 +184,7 @@ cat > "$OUT/安装说明.txt" <<EOF
 EOF
 
 echo "== 校验和 =="
-(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh client/heartbeat.ps1 > SHA256SUMS && cat SHA256SUMS)
+(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh client/heartbeat.ps1 $([ -f client/WolHeartbeat.exe ] && echo client/WolHeartbeat.exe) > SHA256SUMS && cat SHA256SUMS)
 
 echo
 echo "完成。产物目录：$OUT"

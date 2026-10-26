@@ -11,3 +11,8 @@ Dockerfile text eol=lf
 *.ps1        text eol=lf
 *.example    text eol=lf
 .gitattributes text eol=lf
+# C# 客户端源码同样统一 LF
+*.cs        text eol=lf
+*.xaml      text eol=lf
+*.csproj    text eol=lf
+*.manifest  text eol=lf

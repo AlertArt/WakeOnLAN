@@ -33,3 +33,8 @@
 .DS_Store
 wold.exe
 .workbuddy/
+
+# Avalonia 客户端构建产物
+client/WolHeartbeat/bin/
+client/WolHeartbeat/obj/
+client/WolHeartbeat/publish/
