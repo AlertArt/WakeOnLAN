@@ -23,6 +23,14 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _tick;
     private readonly Queue<string> _lines = new();
 
+    private bool _initialized;
+
+    /// <summary>true 表示真的退出；否则点 X 只是收进托盘。</summary>
+    public bool AllowClose { get; set; }
+
+    /// <summary>状态文案变化，用于同步托盘提示。</summary>
+    public event EventHandler<string>? StatusChanged;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -37,12 +45,22 @@ public partial class MainWindow : Window
         _service.NextDueChanged += _ => Dispatcher.UIThread.Post(UpdateCountdown);
         AppLog.LineWritten += line => Dispatcher.UIThread.Post(() => AppendLine(line));
 
-        Loaded += OnWindowLoaded;
         Closed += OnWindowClosed;
     }
 
-    private void OnWindowLoaded(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// 启动流程：窗口默认不显示（收在托盘里），所以不能依赖 Loaded 事件。
+    /// 由 App 在创建窗口后立即调用，保证后台上报照常开始。
+    /// </summary>
+    public void Initialize()
     {
+        if (_initialized)
+        {
+            return;
+        }
+
+        _initialized = true;
+
         LoadLogTail();
         UpdateLogPath();
 
@@ -52,6 +70,42 @@ public partial class MainWindow : Window
         {
             StartRun(save: false);
         }
+    }
+
+    /// <summary>从托盘打开：还原最小化、置前并获得焦点。</summary>
+    public void ShowFromTray()
+    {
+        Show();
+
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        // 没有前台权限时 Activate 抢不到焦点，短暂置顶把它顶到最前。
+        Topmost = true;
+        Activate();
+        Topmost = false;
+    }
+
+    /// <summary>允许本次关闭真正结束进程（托盘菜单"退出"前调用）。</summary>
+    public void RequestExit()
+    {
+        AllowClose = true;
+    }
+
+    protected override void OnClosing(WindowClosingEventArgs e)
+    {
+        if (!AllowClose)
+        {
+            // 点 X 不退出，收进右下角托盘；要退出请用托盘右键菜单。
+            e.Cancel = true;
+            Hide();
+            AppLog.Info("窗口已收进托盘（右键托盘图标可退出）");
+            return;
+        }
+
+        base.OnClosing(e);
     }
 
     private void OnWindowClosed(object? sender, EventArgs e)
@@ -215,6 +269,7 @@ public partial class MainWindow : Window
     {
         StatusText.Text = text;
         StatusDot.Fill = brush;
+        StatusChanged?.Invoke(this, text);
     }
 
     private void UpdateCountdown()

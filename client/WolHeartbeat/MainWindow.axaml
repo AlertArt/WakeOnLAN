@@ -119,7 +119,7 @@
       <TextBlock x:Name="LogPathText" Text="日志：—" FontSize="11"
                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                  Foreground="{StaticResource MutedBrush}" />
-      <TextBlock Grid.Column="1" Text="v1.1.0" FontSize="11"
+      <TextBlock Grid.Column="1" Text="v1.1.1" FontSize="11"
                  Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
     </Grid>
 

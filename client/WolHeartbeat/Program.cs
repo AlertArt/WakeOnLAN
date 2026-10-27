@@ -18,10 +18,12 @@ internal static class Program
         }
 
         // 只允许一个实例：双开会导致同一台机器重复上报、日志互相覆盖。
+        // 第二次启动时通知已在托盘里的实例把窗口弹出来，避免用户以为没启动。
         using var mutex = new System.Threading.Mutex(true, MutexName, out var isFirst);
         if (!isFirst)
         {
-            AppLog.Warn("已有另一个客户端实例在运行，本次启动退出（避免重复上报）");
+            AppLog.Warn("已有另一个客户端实例在运行，已通知它显示窗口");
+            SingleInstance.RequestShow();
             return 0;
         }
 
