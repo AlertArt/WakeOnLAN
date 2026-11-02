@@ -173,6 +173,56 @@
     return '';
   }
 
+  // ---------- F11 M1：心跳指标条 ----------
+
+  function fmtSpeed(bps) {
+    if (typeof bps !== 'number' || bps < 1) return null;
+    if (bps >= 1e6) return (bps / 1e6).toFixed(1) + 'M/s';
+    if (bps >= 1e3) return Math.round(bps / 1e3) + 'K/s';
+    return Math.round(bps) + 'B/s';
+  }
+
+  function fmtUptime(sec) {
+    if (typeof sec !== 'number' || sec < 60) return null;
+    var d = Math.floor(sec / 86400);
+    var h = Math.floor((sec % 86400) / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return d + '天' + h + '时';
+    if (h > 0) return h + '时' + m + '分';
+    return m + '分';
+  }
+
+  // 客户端上报过指标才出现；离线时整条变灰并悬浮显示最后上报时间。
+  function metricsBar(status) {
+    var m = status && status.metrics;
+    if (!m) return null;
+
+    var bits = [];
+    if (typeof m.cpu === 'number' && m.cpu >= 1) bits.push('CPU ' + Math.round(m.cpu) + '%');
+    if (m.mem_total > 0 && m.mem_used <= m.mem_total) {
+      bits.push('内存 ' + Math.round(m.mem_used / m.mem_total * 100) + '%');
+    }
+    if (m.disk_total > 0 && m.disk_used <= m.disk_total) {
+      bits.push('硬盘 ' + Math.round(m.disk_used / m.disk_total * 100) + '%');
+    }
+    var down = fmtSpeed(m.net_down);
+    var up = fmtSpeed(m.net_up);
+    if (down) bits.push('↓' + down);
+    if (up) bits.push('↑' + up);
+    var alive = fmtUptime(m.uptime_s);
+    if (alive) bits.push('运行 ' + alive);
+    if (m.ip) bits.push(m.ip);
+    if (bits.length === 0) return null;
+
+    var online = status.status === 'online';
+    var node = el('div', 'card-metrics' + (online ? '' : ' card-metrics--stale'));
+    node.textContent = bits.join(' · ');
+    if (!online && status.metrics_at) {
+      node.title = '最后上报：' + WOL.formatTime(status.metrics_at);
+    }
+    return node;
+  }
+
   function card(dv) {
     var status = state.statuses.get(dv.id);
     var phase = state.phase.get(dv.id);
@@ -192,6 +242,9 @@
     facts.appendChild(fact('校验', probeText(dv), true));
     facts.appendChild(fact('最近结论', status && status.checked_at ? WOL.formatTime(status.checked_at) : '—', false));
     node.appendChild(facts);
+
+    var metrics = metricsBar(status);
+    if (metrics) node.appendChild(metrics);
 
     var message = messageOf(dv.id, phase, status);
     if (message) node.appendChild(el('p', 'card-msg', message));

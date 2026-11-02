@@ -26,12 +26,15 @@ const (
 // ProbeStatus 是一台设备的状态快照。
 // CheckedAt 为零值表示从未产生过终态结论。
 // ProbeType 供调用方区分「主动探测」与「心跳上报」：后者的结论由最近心跳时间推算。
+// MetricsJSON 是 F11 心跳附带指标的原始 JSON（可能为空），MetricsAt 为其上报时间。
 type ProbeStatus struct {
-	DeviceID  int64
-	Status    string
-	Message   string
-	ProbeType string
-	CheckedAt time.Time
+	DeviceID    int64
+	Status      string
+	Message     string
+	ProbeType   string
+	CheckedAt   time.Time
+	MetricsJSON string
+	MetricsAt   time.Time
 }
 
 // MarkChecking 标记校验开始。不刷新 checked_at：
@@ -82,7 +85,7 @@ func (d *DB) setProbeStatus(ctx context.Context, deviceID int64, status, message
 // 无设备时返回空切片而非 nil，保证 JSON 序列化为 []。
 func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, probe_status, probe_message, probe_type, probe_checked_at FROM device ORDER BY id`)
+		`SELECT id, probe_status, probe_message, probe_type, probe_checked_at, metrics_json, metrics_at FROM device ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("查询校验状态失败: %w", err)
 	}
@@ -93,8 +96,10 @@ func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 		var (
 			ps      ProbeStatus
 			checked string
+			metrics string
+			metAt   string
 		)
-		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &ps.ProbeType, &checked); err != nil {
+		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &ps.ProbeType, &checked, &metrics, &metAt); err != nil {
 			return nil, fmt.Errorf("读取校验状态失败: %w", err)
 		}
 		if checked != "" {
@@ -103,6 +108,14 @@ func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 				return nil, err
 			}
 			ps.CheckedAt = t
+		}
+		ps.MetricsJSON = metrics
+		if metAt != "" {
+			t, err := parseTime(metAt)
+			if err != nil {
+				return nil, fmt.Errorf("读取指标时间失败: %w", err)
+			}
+			ps.MetricsAt = t
 		}
 		list = append(list, ps)
 	}

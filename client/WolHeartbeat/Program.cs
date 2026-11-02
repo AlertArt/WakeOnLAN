@@ -1,6 +1,9 @@
 using System;
 using Avalonia;
 
+// 本程序是 Windows 专用（托盘/Win32 P/Invoke/shutdown.exe），汇编级标注让平台分析器不再告警。
+[assembly: System.Runtime.Versioning.SupportedOSPlatform("windows")]
+
 namespace WolHeartbeat;
 
 internal static class Program

@@ -45,6 +45,7 @@ public sealed class HeartbeatService : IDisposable
     private readonly List<CommandAck> _acks = [];
     private readonly Lock _ackLock = new();
     private bool _supportsCommands;
+    private bool _supportsMetrics;
 
     private CancellationTokenSource? _cts;
     private Task? _loop;
@@ -119,10 +120,7 @@ public sealed class HeartbeatService : IDisposable
     /// <summary>上报一次，返回结果（不发事件、不改调度）。</summary>
     public async Task<HeartbeatResult> SendOnceAsync(CancellationToken ct = default)
     {
-        var sentAcks = SnapshotAcks();
-        var payload = sentAcks.Length == 0 || !_supportsCommands
-            ? JsonSerializer.Serialize(new { mac = _mac, secret = _secret })
-            : JsonSerializer.Serialize(new { mac = _mac, secret = _secret, acks = sentAcks });
+        var (payload, sentAcks, metricsIncluded) = BuildPayload();
 
         try
         {
@@ -137,6 +135,13 @@ public sealed class HeartbeatService : IDisposable
 
                 var interval = ReadInt(body, "interval_seconds", _intervalSeconds);
                 HandleRemoteCommands(body);
+
+                // features 协商发生在首次成功之后：补发一次把指标/回执立刻送达，
+                // 否则 --once 模式只有一次机会，指标要等下个周期（常驻模式无此问题）。
+                if (_supportsMetrics && !metricsIncluded && !ct.IsCancellationRequested)
+                {
+                    await PostHeartbeatAsync(BuildPayload().Payload, ct).ConfigureAwait(false);
+                }
 
                 // 关机指令执行后机器随时会断，回执不能等到下一个周期，立刻补发一次。
                 if (HasQueuedAcks && _supportsCommands)
@@ -171,6 +176,36 @@ public sealed class HeartbeatService : IDisposable
             AppLog.Error($"心跳失败：{message}");
             return new HeartbeatResult(false, 0, message, 0, DateTime.Now);
         }
+    }
+
+    /// <summary>
+    /// 组装心跳请求体：mac/secret 必带；acks 与 metrics 只在上报时见过
+    /// 服务端 features 后才启用——旧服务端会因未知字段直接 400。
+    /// </summary>
+    private (string Payload, CommandAck[] SentAcks, bool MetricsIncluded) BuildPayload()
+    {
+        var sentAcks = SnapshotAcks();
+        var dict = new Dictionary<string, object?>
+        {
+            ["mac"] = _mac,
+            ["secret"] = _secret,
+        };
+        if (_supportsCommands && sentAcks.Length > 0)
+        {
+            dict["acks"] = sentAcks;
+        }
+        bool metricsIncluded = false;
+        if (_supportsMetrics)
+        {
+            var metrics = MetricsCollector.Collect();
+            if (metrics is not null)
+            {
+                dict["metrics"] = metrics;
+                metricsIncluded = true;
+            }
+        }
+
+        return (JsonSerializer.Serialize(dict), sentAcks, metricsIncluded);
     }
 
     private static (string Message, bool Retryable) DescribeFailure(int code, string body) => code switch
@@ -216,9 +251,19 @@ public sealed class HeartbeatService : IDisposable
             {
                 foreach (var item in features.EnumerateArray())
                 {
-                    if (item.ValueKind == JsonValueKind.String && item.GetString() == "commands")
+                    if (item.ValueKind != JsonValueKind.String)
                     {
-                        _supportsCommands = true;
+                        continue;
+                    }
+
+                    switch (item.GetString())
+                    {
+                        case "commands":
+                            _supportsCommands = true;
+                            break;
+                        case "metrics":
+                            _supportsMetrics = true;
+                            break;
                     }
                 }
             }
@@ -292,6 +337,29 @@ public sealed class HeartbeatService : IDisposable
         }
     }
 
+    /// <summary>单独补发一次心跳（把回执/指标/协商结果送到服务端）；失败不影响主流程。</summary>
+    private async Task<bool> PostHeartbeatAsync(string payload, CancellationToken ct)
+    {
+        try
+        {
+            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            using var response = await _http.PostAsync(_endpoint, content, ct).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                AppLog.Info("补充上报已送达服务端");
+                return true;
+            }
+
+            AppLog.Warn($"补充上报失败：HTTP {(int)response.StatusCode}");
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AppLog.Warn($"补充上报失败：{ex.Message}");
+            return false;
+        }
+    }
+
     /// <summary>单独补发一次心跳，只为了把回执送到服务端；失败不影响主流程。</summary>
     private async Task FlushAcksAsync(CancellationToken ct)
     {
@@ -301,24 +369,12 @@ public sealed class HeartbeatService : IDisposable
             return;
         }
 
-        try
+        var ok = await PostHeartbeatAsync(JsonSerializer.Serialize(new { mac = _mac, secret = _secret, acks }), ct)
+            .ConfigureAwait(false);
+        if (ok)
         {
-            var payload = JsonSerializer.Serialize(new { mac = _mac, secret = _secret, acks });
-            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-            using var response = await _http.PostAsync(_endpoint, content, ct).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode)
-            {
-                ClearAcks(acks);
-                AppLog.Info($"指令回执已送达服务端（{acks.Length} 条）");
-            }
-            else
-            {
-                AppLog.Warn($"指令回执发送失败：HTTP {(int)response.StatusCode}");
-            }
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn($"指令回执发送失败：{ex.Message}");
+            ClearAcks(acks);
+            AppLog.Info($"指令回执已送达服务端（{acks.Length} 条）");
         }
     }
 

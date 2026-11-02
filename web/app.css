@@ -276,6 +276,24 @@ h2 {
   color: var(--muted);
 }
 
+/* ---------- 心跳指标条（F11 M1） ---------- */
+
+.card-metrics {
+  margin-top: 10px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  word-break: break-all;
+}
+
+.card-metrics--stale {
+  opacity: 0.55;
+}
+
 .card-actions {
   display: flex;
   gap: 8px;

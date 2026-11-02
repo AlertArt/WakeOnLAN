@@ -8,7 +8,7 @@
 'use strict';
 
 // 改过壳资源（devices.js/index.html）必须升版本，否则老缓存会继续生效（E7 禁止事项 12）。
-var CACHE = 'wol-static-v3';
+var CACHE = 'wol-static-v4';
 
 // 壳资源。注意：这里绝不能出现任何 /api/ 路径。
 var SHELL = [

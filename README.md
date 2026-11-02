@@ -126,6 +126,14 @@ docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.1.0 .
 - 指令记录可审计：`GET /api/commands`；客户端演练模式 `--dry-run` 或环境变量 `WOL_SHUTDOWN_DRYRUN=1` 只记录不执行；
 - 契约与验收：`docs/F10-command-contract.md`、`docs/F10-acceptance.md`。
 
+## 设备运行指标（F11 M1）
+
+心跳客户端随心跳上报轻量指标：CPU / 内存 / 磁盘 / 网络速率 / IP / 开机时长 / 主机名 / 系统。设备卡片上直接展示，设备离线后指标变灰并标注最后上报时间。
+
+- 每设备只保留最新一份快照（SQLite 持久化），不做历史曲线；
+- 契约向后兼容：旧客户端不带 `metrics` 字段行为完全不变；服务端对异常值钳制、类型错丢弃，坏指标不影响心跳；
+- 计划与验收：`docs/F11-remote-access-plan.md`（后续 M2 远程桌面 / M3 网络回滚安全网）、`docs/F11-metrics-acceptance.md`。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |

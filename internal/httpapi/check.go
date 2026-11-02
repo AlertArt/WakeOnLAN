@@ -4,6 +4,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -19,9 +20,11 @@ type Checker interface {
 
 // StatusStore 抽象状态查询与写入能力，由 store.DB 实现。
 // MarkOnline 同时供心跳上报复用：收到心跳即视为"已上线"，最近结论时间=现在。
+// SaveMetrics 供 F11 心跳附带指标落库。
 type StatusStore interface {
 	ListProbeStatus(ctx context.Context) ([]store.ProbeStatus, error)
 	MarkOnline(ctx context.Context, deviceID int64) error
+	SaveMetrics(ctx context.Context, deviceID int64, m *store.Metrics, at time.Time) error
 }
 
 // checkResponse 是触发接口的回执，只允许这两个键（见 docs/E3-contract.md）。
@@ -30,12 +33,15 @@ type checkResponse struct {
 	StartedAt string `json:"started_at"`
 }
 
-// probeStatusResponse 是状态查询的单项形状，只允许这四个键。
+// probeStatusResponse 是状态查询的单项形状。
+// metrics/metrics_at 是 F11 追加的可选键：无指标的设备（老客户端）不出现这两个键。
 type probeStatusResponse struct {
-	DeviceID  int64  `json:"device_id"`
-	Status    string `json:"status"`
-	Message   string `json:"message"`
-	CheckedAt string `json:"checked_at"`
+	DeviceID  int64           `json:"device_id"`
+	Status    string          `json:"status"`
+	Message   string          `json:"message"`
+	CheckedAt string          `json:"checked_at"`
+	Metrics   json.RawMessage `json:"metrics,omitempty"`
+	MetricsAt string          `json:"metrics_at,omitempty"`
 }
 
 func (s *Server) handleStartCheck(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +112,10 @@ func (s *Server) handleListStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if !item.CheckedAt.IsZero() {
 			resp.CheckedAt = item.CheckedAt.Format(time.RFC3339)
+		}
+		if item.MetricsJSON != "" && json.Valid([]byte(item.MetricsJSON)) {
+			resp.Metrics = json.RawMessage(item.MetricsJSON)
+			resp.MetricsAt = item.MetricsAt.Format(time.RFC3339)
 		}
 		// 心跳设备的状态由「最近一次心跳距今多久」推算，落库值只反映最后一次上报。
 		// 这样无需后台清扫任务：读的时候晚一秒就知道它已经离线了。

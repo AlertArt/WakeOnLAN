@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS device (
 	probe_status     TEXT    NOT NULL DEFAULT 'pending',
 	probe_message    TEXT    NOT NULL DEFAULT '',
 	probe_checked_at TEXT    NOT NULL DEFAULT '',
+	metrics_json     TEXT    NOT NULL DEFAULT '',
+	metrics_at       TEXT    NOT NULL DEFAULT '',
 	created_at       TEXT    NOT NULL,
 	updated_at       TEXT    NOT NULL
 );
@@ -57,11 +59,13 @@ func (d *DB) Migrate(ctx context.Context) error {
 		return fmt.Errorf("初始化 device_command 表失败: %w", err)
 	}
 
-	// E1 建库时没有这三列，老数据文件需要补列。用默认值填充，不重写已有行。
+	// E1 建库时没有这几列，老数据文件需要补列。用默认值填充，不重写已有行。
 	added := []struct{ name, ddl string }{
 		{"probe_status", `ALTER TABLE device ADD COLUMN probe_status TEXT NOT NULL DEFAULT 'pending'`},
 		{"probe_message", `ALTER TABLE device ADD COLUMN probe_message TEXT NOT NULL DEFAULT ''`},
 		{"probe_checked_at", `ALTER TABLE device ADD COLUMN probe_checked_at TEXT NOT NULL DEFAULT ''`},
+		{"metrics_json", `ALTER TABLE device ADD COLUMN metrics_json TEXT NOT NULL DEFAULT ''`},
+		{"metrics_at", `ALTER TABLE device ADD COLUMN metrics_at TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, col := range added {
 		exists, err := d.hasColumn(ctx, "device", col.name)

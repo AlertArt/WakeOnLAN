@@ -277,8 +277,8 @@ func TestHeartbeatCarriesCommandsAndHandlesAcks(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if len(resp.Features) != 1 || resp.Features[0] != "commands" {
-		t.Fatalf("features = %v, want [commands]", resp.Features)
+	if len(resp.Features) != 2 || resp.Features[0] != "commands" || resp.Features[1] != "metrics" {
+		t.Fatalf("features = %v, want [commands metrics]", resp.Features)
 	}
 	if len(resp.Commands) != 1 || resp.Commands[0].Type != store.CommandShutdown {
 		t.Fatalf("commands = %+v, want 一条 shutdown", resp.Commands)

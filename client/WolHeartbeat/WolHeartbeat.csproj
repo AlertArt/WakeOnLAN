@@ -19,6 +19,8 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+    <!-- PerformanceCounter 在 .NET Core+ 拆成了独立包，指标采集（CPU/网速）依赖它。 -->
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

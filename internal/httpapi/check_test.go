@@ -54,6 +54,8 @@ type fakeStatusStore struct {
 	markErr error
 	// onlineIDs 记录被标记为已上线的设备，供心跳用例断言。
 	onlineIDs []int64
+	// metrics 记录 SaveMetrics 的最近一次写入，供 F11 用例断言。
+	metrics map[int64]store.Metrics
 }
 
 func (f *fakeStatusStore) ListProbeStatus(context.Context) ([]store.ProbeStatus, error) {
@@ -68,6 +70,26 @@ func (f *fakeStatusStore) MarkOnline(_ context.Context, deviceID int64) error {
 		return f.markErr
 	}
 	f.onlineIDs = append(f.onlineIDs, deviceID)
+	return nil
+}
+
+func (f *fakeStatusStore) SaveMetrics(_ context.Context, deviceID int64, m *store.Metrics, at time.Time) error {
+	if f.markErr != nil {
+		return f.markErr
+	}
+	if f.metrics == nil {
+		f.metrics = map[int64]store.Metrics{}
+	}
+	f.metrics[deviceID] = *m
+	// 同步到 items，让 /api/status 能读回（真实行为对齐 store.DB）。
+	for i := range f.items {
+		if f.items[i].DeviceID == deviceID {
+			if b, err := json.Marshal(m); err == nil {
+				f.items[i].MetricsJSON = string(b)
+			}
+			f.items[i].MetricsAt = at
+		}
+	}
 	return nil
 }
 

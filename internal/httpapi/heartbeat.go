@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -23,11 +24,13 @@ import (
 
 // heartbeatRequest 是心跳上报的请求体。
 // acks 是 F10 追加的可选字段：客户端执行完关机/重启后在这里回执。
-// 旧客户端不带它，旧服务端会因未知字段拒绝——所以客户端只在见过 features 后才发。
+// metrics 是 F11 追加的可选字段：客户端随心跳携带的轻量指标。
+// 旧客户端不带它们；客户端只在上报时见过对应 features 才会发，避免旧服务端 400。
 type heartbeatRequest struct {
-	MAC    string         `json:"mac"`
-	Secret string         `json:"secret"`
-	Acks   []heartbeatAck `json:"acks,omitempty"`
+	MAC     string                     `json:"mac"`
+	Secret  string                     `json:"secret"`
+	Acks    []heartbeatAck             `json:"acks,omitempty"`
+	Metrics map[string]json.RawMessage `json:"metrics,omitempty"`
 }
 
 // heartbeatAck 是一条指令的执行结果。
@@ -57,7 +60,7 @@ type heartbeatCommand struct {
 }
 
 // heartbeatFeatures 声明本服务端支持的能力。
-var heartbeatFeatures = []string{"commands"}
+var heartbeatFeatures = []string{"commands", "metrics"}
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req heartbeatRequest
@@ -98,6 +101,15 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.applyAcks(r.Context(), dv.ID, req.Acks)
+
+	// 指标落库失败不影响心跳：上线状态与指令比一帧指标重要。
+	if req.Metrics != nil {
+		if m := parseMetrics(req.Metrics); m != nil {
+			if err := s.statuses.SaveMetrics(r.Context(), dv.ID, m, time.Now()); err != nil {
+				s.logger.Warn("写入设备指标失败", "id", dv.ID, "err", err)
+			}
+		}
+	}
 
 	// 取走待执行指令：置为 delivered，过期未取走的置为 expired。
 	// 取指令失败不该影响心跳本身——设备上线状态比指令重要。
@@ -148,6 +160,62 @@ func (s *Server) applyAcks(ctx context.Context, deviceID int64, acks []heartbeat
 			s.logger.Error("写入指令回执失败", "device_id", deviceID, "command_id", ack.ID, "err", err)
 		}
 	}
+}
+
+// parseMetrics 把客户端发来的宽松 JSON 对象解析成结构化指标。
+// 宽松策略：未知键忽略、类型不对的字段丢弃、数值钳制（Clamp）——
+// 指标只是展示用途，任何坏字段都不值得让一次心跳失败。
+// 返回 nil 表示没有可用字段，无需落库。
+func parseMetrics(raw map[string]json.RawMessage) *store.Metrics {
+	var m store.Metrics
+	m.CPU = metricNum(raw, "cpu", 100)
+	m.MemUsed = metricNum(raw, "mem_used", 1<<24)
+	m.MemTotal = metricNum(raw, "mem_total", 1<<24)
+	m.DiskUsed = metricNum(raw, "disk_used", 1e12)
+	m.DiskTotal = metricNum(raw, "disk_total", 1e12)
+	m.NetUp = metricNum(raw, "net_up", 1e12)
+	m.NetDown = metricNum(raw, "net_down", 1e12)
+	m.UptimeS = int64(metricNum(raw, "uptime_s", 1e12))
+	m.IP = metricStr(raw, "ip")
+	m.Hostname = metricStr(raw, "hostname")
+	m.OS = metricStr(raw, "os")
+
+	if !m.Clamp() {
+		return nil
+	}
+	return &m
+}
+
+// metricNum 读取数值字段：类型不对或缺失返回 0，超上限截断。
+func metricNum(raw map[string]json.RawMessage, key string, max float64) float64 {
+	v, ok := raw[key]
+	if !ok {
+		return 0
+	}
+	var f float64
+	if err := json.Unmarshal(v, &f); err != nil {
+		return 0
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
+		return 0
+	}
+	if f > max {
+		return max
+	}
+	return f
+}
+
+// metricStr 读取字符串字段：类型不对返回空串。
+func metricStr(raw map[string]json.RawMessage, key string) string {
+	v, ok := raw[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(v, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // findDeviceByMAC 在设备列表里按 MAC 查找。
