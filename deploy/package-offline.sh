@@ -111,6 +111,9 @@ fi
 gzip -c "$OUT/$TAR" > "$OUT/$TAR.gz"
 
 cp "$ROOT/deploy/docker-compose.nas.yml" "$OUT/"
+# compose 里写死的标签要跟着本次 VERSION 走：否则发新版本时包内引用的是旧镜像名，
+# NAS 上 load 完镜像仍会报 "image not found"。只改 services 下的 image 行。
+sed -i.bak "s|^\( *\)image: wol:.*$|\1image: wol:$VERSION|" "$OUT/docker-compose.nas.yml" && rm -f "$OUT/docker-compose.nas.yml.bak"
 cp "$ROOT/deploy/.env.example" "$OUT/.env.example"
 cp "$ROOT/deploy/smoke.sh" "$OUT/smoke.sh"
 chmod +x "$OUT/smoke.sh"
@@ -182,6 +185,23 @@ cat > "$OUT/安装说明.txt" <<EOF
    客户端每 60 秒上报一次，3 分钟没有心跳即判离线；详见 client\README.md。
 
 注意：网络必须是 host 模式，桥接模式下唤醒包发不出局域网。
+
+七、v2.0.0 新增：远程关机/重启 与 状态指标（需 GUI 客户端）
+1) 远程关机 / 重启
+   网页设备卡片上点"关机"或"重启"，选择倒计时（10-600 秒）并确认；
+   指令随目标机下一次心跳（≤60 秒）下发，客户端执行后立刻补发回执，
+   卡片上会依次出现 已下发 → 执行中 → 已完成（失败会给出原因）。
+   前提：目标机在跑 v2.0.0 的 WolHeartbeat.exe，且以管理员身份运行
+   （普通权限调用 shutdown 会被系统拒绝，回执里会写明）。
+   演练：客户端加 --dry-run 启动（或环境变量 WOL_SHUTDOWN_DRYRUN=1），
+   只记录"将要执行"的关机命令、不真正执行，建议首次上线先演练一次。
+2) 设备状态指标
+   心跳额外上报 CPU 占用、内存、各磁盘占用、上下行网速、内网 IP、开机时长，
+   直接显示在设备卡片下方的指标条，随心跳刷新；3 分钟无心跳判离线。
+   无需额外配置——客户端升级到 v2.0.0 即自动生效。
+3) heartbeat.ps1（脚本版）只做在线上报，不支持关机/重启，也不上报指标；
+   这两项功能必须用 GUI 客户端。
+
 详细说明见仓库 deploy/README.md。
 EOF
 

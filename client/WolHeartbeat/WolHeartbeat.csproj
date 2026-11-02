@@ -7,6 +7,9 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>WolHeartbeat</AssemblyName>
     <RootNamespace>WolHeartbeat</RootNamespace>
+    <!-- 与 GitHub Release 标签保持一致；界面页脚另有一份硬编码，发版时一起改。 -->
+    <Version>2.0.0-beta.1</Version>
+    <Product>WakeOnLAN 心跳客户端</Product>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>

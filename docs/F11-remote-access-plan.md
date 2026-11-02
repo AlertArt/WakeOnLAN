@@ -106,7 +106,7 @@
 | # | 场景 | 通过标准 |
 | --- | --- | --- |
 | M2-1 | 单元/接口测试 | 指令校验、rdp-session 的 4 类拒绝（非心跳/离线/未启用/未配置 guac）各有测试；`go test` 全绿 |
-| M2-2 | 指令真机下发 | 网页对在线目标机下发 enable_rdp → 60 秒内回执"RDP 已启用"，目标机 `reg query fDenyTSConnections` = 0，`netstat -an | findstr 3389` 处于 LISTENING |
+| M2-2 | 指令真机下发 | 网页对在线目标机下发 enable_rdp → 60 秒内回执"RDP 已启用"，目标机 `reg query fDenyTSConnections` = 0，`netstat -an \| findstr 3389` 处于 LISTENING |
 | M2-3 | 一次性票据 | rdp-session 返回的 URL 60 秒后再次访问被拒；同 URL 二次使用被拒 |
 | M2-4 | 外部浏览器连入 | 手机浏览器（走公网）登录 WakeOnLAN → 点远程桌面 → 新标签出现 Windows 登录界面 → 输入凭据进入桌面 |
 | M2-5 | 桌面可用性 | 桌面内完成：打开资源管理器、复制粘贴文本、中文输入法输入、分辨率正常不糊 |
