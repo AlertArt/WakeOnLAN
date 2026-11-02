@@ -11,6 +11,10 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        // 演练模式：收到关机/重启指令只记录不执行，用于验收与演示。
+        CommandRunner.DryRun = CommandLine.HasFlag(args, "--dry-run") ||
+                               Environment.GetEnvironmentVariable("WOL_SHUTDOWN_DRYRUN") == "1";
+
         // 无界面模式：--once 只上报一次，便于排查与验收（退出码 0 成功 / 1 失败 / 2 配置有误）。
         if (CommandLine.HasFlag(args, "--once"))
         {

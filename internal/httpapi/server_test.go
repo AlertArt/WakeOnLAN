@@ -14,7 +14,7 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
 func newTestServer(dbErr error) http.Handler {
-	h := New(fakePinger{err: dbErr}, newFakeDeviceStore(), &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes()
+	h := New(fakePinger{err: dbErr}, newFakeDeviceStore(), &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), newFakeCommandStore(), testAuthn, newTestLogger(), "../../web").Routes()
 	return withTestToken(h)
 }
 

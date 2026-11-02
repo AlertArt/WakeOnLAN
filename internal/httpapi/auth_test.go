@@ -39,7 +39,7 @@ func newAuthFixture(t *testing.T, ttl time.Duration) authFixture {
 	})
 	fs.nextID = 2
 
-	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), a, newTestLogger(), "../../web").Routes()
+	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), newFakeCommandStore(), a, newTestLogger(), "../../web").Routes()
 	return authFixture{handler: h, authn: a, devices: fs}
 }
 

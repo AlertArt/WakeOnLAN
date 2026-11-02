@@ -113,7 +113,7 @@ func newCheckTestServer(t *testing.T) checkFixture {
 
 	checker := &fakeChecker{}
 	status := newFakeStatusStore()
-	h := withTestToken(New(fakePinger{}, fs, &fakeWaker{}, checker, status, testAuthn, newTestLogger(), "../../web").Routes())
+	h := withTestToken(New(fakePinger{}, fs, &fakeWaker{}, checker, status, newFakeCommandStore(), testAuthn, newTestLogger(), "../../web").Routes())
 	return checkFixture{handler: h, devices: fs, checker: checker, status: status}
 }
 

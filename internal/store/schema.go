@@ -29,10 +29,32 @@ CREATE TABLE IF NOT EXISTS device (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_device_mac ON device (mac);
 `
 
+// F10 的指令队列。独立建表而不是塞进 device：指令是事件流，设备是实体。
+const schemaCommand = `
+CREATE TABLE IF NOT EXISTS device_command (
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	device_id      INTEGER NOT NULL,
+	type           TEXT    NOT NULL,
+	delay_seconds  INTEGER NOT NULL DEFAULT 60,
+	force          INTEGER NOT NULL DEFAULT 0,
+	status         TEXT    NOT NULL DEFAULT 'pending',
+	message        TEXT    NOT NULL DEFAULT '',
+	created_at     TEXT    NOT NULL,
+	delivered_at   TEXT    NOT NULL DEFAULT '',
+	finished_at    TEXT    NOT NULL DEFAULT '',
+	expires_at     TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_command_status ON device_command (device_id, status);
+`
+
 // Migrate 创建业务表并补齐新增列，幂等，可重复调用。
 func (d *DB) Migrate(ctx context.Context) error {
 	if _, err := d.sql.ExecContext(ctx, schemaDevice); err != nil {
 		return fmt.Errorf("初始化 device 表失败: %w", err)
+	}
+	if _, err := d.sql.ExecContext(ctx, schemaCommand); err != nil {
+		return fmt.Errorf("初始化 device_command 表失败: %w", err)
 	}
 
 	// E1 建库时没有这三列，老数据文件需要补列。用默认值填充，不重写已有行。

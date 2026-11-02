@@ -23,7 +23,7 @@ const validBody = `{"name":"书房主机","mac":"aa:bb:cc:dd:ee:ff","broadcast_a
 func newDeviceTestServer(t *testing.T) (http.Handler, *fakeDeviceStore) {
 	t.Helper()
 	fs := newFakeDeviceStore()
-	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes()
+	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), newFakeCommandStore(), testAuthn, newTestLogger(), "../../web").Routes()
 	return withTestToken(h), fs
 }
 
@@ -355,7 +355,7 @@ func TestDeleteDeviceNotFound(t *testing.T) {
 func TestDeviceStoreErrorHidesDetail(t *testing.T) {
 	fs := newFakeDeviceStore()
 	fs.err = errBoom
-	h := withTestToken(New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes())
+	h := withTestToken(New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, newFakeStatusStore(), newFakeCommandStore(), testAuthn, newTestLogger(), "../../web").Routes())
 
 	rec := do(h, http.MethodGet, "/api/devices", "")
 	if rec.Code != http.StatusInternalServerError {

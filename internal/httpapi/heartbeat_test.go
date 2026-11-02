@@ -19,6 +19,14 @@ const testHeartbeatSecret = "hb-secret-0123456789"
 func newHeartbeatServer(t *testing.T) (http.Handler, *fakeDeviceStore, *fakeStatusStore) {
 	t.Helper()
 
+	h, devices, status, _ := newHeartbeatServerWithCommands(t)
+	return h, devices, status
+}
+
+// newHeartbeatServerWithCommands 额外把指令队列返回给用例，供 F10 断言。
+func newHeartbeatServerWithCommands(t *testing.T) (http.Handler, *fakeDeviceStore, *fakeStatusStore, *fakeCommandStore) {
+	t.Helper()
+
 	fs := newFakeDeviceStore()
 	fs.items = []store.Device{
 		{
@@ -43,8 +51,9 @@ func newHeartbeatServer(t *testing.T) (http.Handler, *fakeDeviceStore, *fakeStat
 	fs.nextID = 3
 
 	status := newFakeStatusStore()
-	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, status, testAuthn, newTestLogger(), "../../web").Routes()
-	return h, fs, status
+	commands := newFakeCommandStore()
+	h := New(fakePinger{}, fs, &fakeWaker{}, &fakeChecker{}, status, commands, testAuthn, newTestLogger(), "../../web").Routes()
+	return h, fs, status, commands
 }
 
 func postHeartbeat(h http.Handler, body string) *httptest.ResponseRecorder {
@@ -64,7 +73,7 @@ func TestHeartbeatAccepted(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want 200, body=%s", rec.Code, rec.Body)
 	}
-	assertKeys(t, rec.Body.Bytes(), []string{"interval_seconds", "status", "timeout_seconds"})
+	assertKeys(t, rec.Body.Bytes(), []string{"features", "interval_seconds", "status", "timeout_seconds"})
 
 	var body heartbeatResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {

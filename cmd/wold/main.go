@@ -70,7 +70,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           httpapi.New(db, db, waker, runner, db, authn, logger, "web").Routes(),
+		Handler:           httpapi.New(db, db, waker, runner, db, db, authn, logger, "web").Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

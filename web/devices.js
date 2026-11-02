@@ -1,6 +1,7 @@
 // devices.js —— 设备列表页：列表渲染、唤醒状态机、编辑/删除弹层、退出登录。
 // 只消费 docs/E1–E4-contract.md 已冻结的接口；字段原样使用，不改名、不重组。
 // 唤醒流程：wake(202) → check(202) → 每 5 秒轮询 /api/status → 终态。
+// 关机/重启流程：POST /commands(201) → 每 5 秒轮询该设备最近一条指令 → done/failed/expired。
 (function () {
   'use strict';
 
@@ -16,6 +17,16 @@
   // 这里多留 20 秒余量，覆盖开机 + 客户端启动的时间。
   var HEARTBEAT_WAIT_MS = 200000;
   var TERMINAL = { online: true, timeout: true, failed: true };
+  // 指令是异步执行的：下发后至少等一个心跳周期，这里给足 5 分钟。
+  var COMMAND_WAIT_MS = 300000;
+  var COMMAND_LABEL = { shutdown: '关机', restart: '重启' };
+  var COMMAND_TEXT = {
+    pending: '等待客户端取走（下一个心跳周期）',
+    delivered: '客户端已接收，正在执行',
+    done: '已执行',
+    failed: '执行失败',
+    expired: '已过期未送达（设备当时可能已离线）',
+  };
 
   var PROBE_FIELD = {
     ping: { label: 'Ping 目标', placeholder: '192.168.1.10', hint: '填写设备在局域网内的 IPv4 地址。' },
@@ -41,6 +52,7 @@
     editorSubmit: document.getElementById('editor-submit'),
     editorCancel: document.getElementById('editor-cancel'),
     confirm: document.getElementById('confirm'),
+    confirmTitle: document.getElementById('confirm-title'),
     confirmText: document.getElementById('confirm-text'),
     confirmOk: document.getElementById('confirm-ok'),
     confirmCancel: document.getElementById('confirm-cancel'),
@@ -70,6 +82,10 @@
     loading: false,
     editingId: null,
     deletingId: null,
+    commands: new Map(), // device_id -> 最近一条指令（服务端返回的形状）
+    commandWatch: new Map(), // device_id -> 停止轮询的截止毫秒数
+    confirmMode: null, // 'delete' | 'power'
+    powerRequest: null, // { id, type }
   };
 
   var noticeTimer = null;
@@ -125,8 +141,32 @@
     return node;
   }
 
+  function commandNote(id) {
+    var cmd = state.commands.get(id);
+    if (!cmd) return '';
+    var label = COMMAND_LABEL[cmd.type] || cmd.type;
+    var text = COMMAND_TEXT[cmd.status] || cmd.status;
+    // 失败时把客户端回执里的原因带上，否则用户只能看到"执行失败"四个字。
+    if (cmd.message && cmd.status === 'failed') text += '：' + cmd.message;
+    return label + '指令：' + text;
+  }
+
   function messageOf(id, phase, status) {
     if (phase === 'sending') return '正在发送唤醒包…';
+
+    // 指令进行中优先展示指令状态：这时候"校验超时"之类的旧结论只会让人困惑。
+    var cmd = state.commands.get(id);
+    if (cmd) {
+      if (cmd.status === 'pending' || cmd.status === 'delivered' || cmd.status === 'failed') {
+        return commandNote(id);
+      }
+      // 已执行只保留 10 分钟：机器关掉后本来就会显示心跳超时，太久远的结果别再占着位置。
+      if (cmd.status === 'done' && cmd.finished_at &&
+        Date.now() - Date.parse(cmd.finished_at) < 600000) {
+        return commandNote(id);
+      }
+    }
+
     if (status && status.message) return status.message;
     if (state.notes.has(id)) return state.notes.get(id);
     if (status && statusMeta[status.status]) return statusMeta[status.status].hint;
@@ -162,6 +202,19 @@
     wake.dataset.act = 'wake';
     wake.disabled = Boolean(phase);
     actions.appendChild(wake);
+
+    // 只有心跳设备有下发通道，其余设备不显示关机/重启，避免点了必然失败。
+    if (dv.probe_type === 'heartbeat') {
+      var restart = el('button', 'btn', '重启');
+      restart.type = 'button';
+      restart.dataset.act = 'restart';
+      actions.appendChild(restart);
+
+      var shutdown = el('button', 'btn btn--danger', '关机');
+      shutdown.type = 'button';
+      shutdown.dataset.act = 'shutdown';
+      actions.appendChild(shutdown);
+    }
 
     var edit = el('button', 'btn', '编辑');
     edit.type = 'button';
@@ -245,7 +298,36 @@
       return;
     }
     mergeStatuses(list || []);
+    await refreshWatchedCommands();
     render();
+  }
+
+  // 只轮询还在等待中的指令，终态即停止，避免长期空转。
+  async function refreshWatchedCommands() {
+    var now = Date.now();
+    var ids = Array.from(state.commandWatch.keys());
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      if (now > state.commandWatch.get(id)) {
+        state.commandWatch.delete(id);
+        continue;
+      }
+      try {
+        var list = await request('GET', '/api/devices/' + id + '/commands?limit=1');
+        var cmd = list && list[0];
+        if (!cmd) continue;
+        state.commands.set(id, cmd);
+        if (cmd.status === 'done' || cmd.status === 'failed' || cmd.status === 'expired') {
+          state.commandWatch.delete(id);
+        }
+      } catch (err) {
+        // 单条失败不影响其它设备，下一轮继续。
+      }
+    }
+
+    if (state.commandWatch.size === 0 && state.watch.size === 0 && state.phase.size === 0) {
+      stopPolling();
+    }
   }
 
   async function loadAll() {
@@ -437,11 +519,59 @@
     }
   }
 
+  function askPower(id, type) {
+    var dv = findDevice(id);
+    if (!dv) return;
+
+    // 客户端离线时服务端会拒绝，这里先拦一次，省一次往返。
+    var status = state.statuses.get(id);
+    if (!status || status.status !== 'online') {
+      notice('设备当前不在线，无法下发' + COMMAND_LABEL[type] + '指令', 'error');
+      return;
+    }
+
+    state.confirmMode = 'power';
+    state.powerRequest = { id: id, type: type };
+    dom.confirmTitle.textContent = COMMAND_LABEL[type] + '设备';
+    dom.confirmText.textContent =
+      '将向「' + dv.name + '」下发' + COMMAND_LABEL[type] + '指令：客户端会在 60 秒后执行，' +
+      '期间可在目标机执行 shutdown /a 撤销。确定继续？';
+    dom.confirmOk.textContent = '确认' + COMMAND_LABEL[type];
+    dom.confirm.showModal();
+  }
+
+  async function doPower() {
+    var req = state.powerRequest;
+    if (!req) return;
+
+    dom.confirmOk.disabled = true;
+    try {
+      var cmd = await request('POST', '/api/devices/' + req.id + '/commands', {
+        type: req.type,
+        delay_seconds: 60,
+      });
+      dom.confirm.close();
+      state.commands.set(req.id, cmd);
+      state.commandWatch.set(req.id, Date.now() + COMMAND_WAIT_MS);
+      startPolling();
+      notice(COMMAND_LABEL[req.type] + '指令已下发，等待客户端执行…', 'ok');
+      render();
+    } catch (err) {
+      dom.confirm.close();
+      notice(err.message, 'error');
+    } finally {
+      dom.confirmOk.disabled = false;
+    }
+  }
+
   function askDelete(id) {
     var dv = findDevice(id);
     if (!dv) return;
+    state.confirmMode = 'delete';
     state.deletingId = id;
+    dom.confirmTitle.textContent = '删除设备';
     dom.confirmText.textContent = '删除「' + dv.name + '」后无法恢复，需要重新录入 MAC 与广播地址。';
+    dom.confirmOk.textContent = '删除';
     dom.confirm.showModal();
   }
 
@@ -485,6 +615,8 @@
       var id = Number(holder.dataset.id);
       var act = btn.dataset.act;
       if (act === 'wake') wake(id);
+      else if (act === 'shutdown') askPower(id, 'shutdown');
+      else if (act === 'restart') askPower(id, 'restart');
       else if (act === 'edit') openEditor(id);
       else if (act === 'delete') askDelete(id);
     });
@@ -508,12 +640,17 @@
       state.editingId = null;
     });
 
-    dom.confirmOk.addEventListener('click', doDelete);
+    dom.confirmOk.addEventListener('click', function () {
+      if (state.confirmMode === 'power') doPower();
+      else doDelete();
+    });
     dom.confirmCancel.addEventListener('click', function () {
       dom.confirm.close();
     });
     dom.confirm.addEventListener('close', function () {
       state.deletingId = null;
+      state.powerRequest = null;
+      state.confirmMode = null;
     });
   }
 

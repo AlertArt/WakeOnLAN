@@ -48,7 +48,7 @@ func newWakeTestServer(t *testing.T, w *fakeWaker) (http.Handler, *fakeDeviceSto
 		ProbeValue:    "192.168.1.10",
 	})
 	fs.nextID = 2
-	h := New(fakePinger{}, fs, w, &fakeChecker{}, newFakeStatusStore(), testAuthn, newTestLogger(), "../../web").Routes()
+	h := New(fakePinger{}, fs, w, &fakeChecker{}, newFakeStatusStore(), newFakeCommandStore(), testAuthn, newTestLogger(), "../../web").Routes()
 	return withTestToken(h), fs
 }
 

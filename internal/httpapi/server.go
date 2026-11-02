@@ -35,19 +35,21 @@ type Server struct {
 	waker    Waker
 	checker  Checker
 	statuses StatusStore
+	commands CommandStore
 	auth     *auth.Authenticator
 	logger   *slog.Logger
 	webDir   string
 }
 
 // New 构造 Server。
-func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses StatusStore, authn *auth.Authenticator, logger *slog.Logger, webDir string) *Server {
+func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses StatusStore, commands CommandStore, authn *auth.Authenticator, logger *slog.Logger, webDir string) *Server {
 	return &Server{
 		db:       db,
 		devices:  devices,
 		waker:    waker,
 		checker:  checker,
 		statuses: statuses,
+		commands: commands,
 		auth:     authn,
 		logger:   logger,
 		webDir:   webDir,
@@ -84,6 +86,11 @@ func (s *Server) Routes() http.Handler {
 
 	// F5 登出：吊销当前令牌。登录见上方公开路径。
 	mux.Handle("POST /api/logout", guard(s.handleLogout))
+
+	// F10 关机/重启：指令排队后随心跳回执下发，契约见 docs/F10-command-contract.md。
+	mux.Handle("POST /api/devices/{id}/commands", guard(s.handleCreateCommand))
+	mux.Handle("GET /api/devices/{id}/commands", guard(s.handleListDeviceCommands))
+	mux.Handle("GET /api/commands", guard(s.handleListCommands))
 
 	// 静态资源：登录页需要先加载出来才能输入口令，因此保持公开。
 	// 页面内不含任何设备数据，数据一律走受保护的 /api/。

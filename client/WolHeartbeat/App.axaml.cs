@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -51,6 +52,11 @@ public partial class App : Application
         showItem.Click += (_, _) => ShowWindow();
         menu.Items.Add(showItem);
 
+        // 下发的关机有 60 秒缓冲，这段时间内可以撤销——托盘是唯一随时可达的入口。
+        var abortItem = new NativeMenuItem("取消关机（撤销）");
+        abortItem.Click += (_, _) => AbortShutdown();
+        menu.Items.Add(abortItem);
+
         menu.Items.Add(new NativeMenuItemSeparator());
 
         var exitItem = new NativeMenuItem("退出");
@@ -94,6 +100,17 @@ public partial class App : Application
         {
             _tray.ToolTipText = $"WOL 心跳客户端 · {status}（双击打开）";
         }
+    }
+
+    /// <summary>托盘菜单里的"取消关机"：调用 shutdown /a 撤销已排期的关机。</summary>
+    private static void AbortShutdown()
+    {
+        // 起进程会有几十毫秒阻塞，放到后台线程，别卡住托盘菜单。
+        Task.Run(() =>
+        {
+            var (ok, message) = CommandRunner.Abort();
+            AppLog.Info($"取消关机：{(ok ? "成功" : "失败")} · {message}");
+        });
     }
 
     public void ShowWindow()

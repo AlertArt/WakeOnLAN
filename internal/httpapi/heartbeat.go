@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,18 +21,43 @@ import (
 	"wol/internal/store"
 )
 
-// heartbeatRequest 是心跳上报的请求体，只接受这两个键。
+// heartbeatRequest 是心跳上报的请求体。
+// acks 是 F10 追加的可选字段：客户端执行完关机/重启后在这里回执。
+// 旧客户端不带它，旧服务端会因未知字段拒绝——所以客户端只在见过 features 后才发。
 type heartbeatRequest struct {
-	MAC    string `json:"mac"`
-	Secret string `json:"secret"`
+	MAC    string         `json:"mac"`
+	Secret string         `json:"secret"`
+	Acks   []heartbeatAck `json:"acks,omitempty"`
 }
 
-// heartbeatResponse 是心跳回执。interval_seconds 让客户端不必自己写死间隔。
-type heartbeatResponse struct {
-	Status          string `json:"status"`
-	IntervalSeconds int    `json:"interval_seconds"`
-	TimeoutSeconds  int    `json:"timeout_seconds"`
+// heartbeatAck 是一条指令的执行结果。
+type heartbeatAck struct {
+	ID      int64  `json:"id"`
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
 }
+
+// heartbeatResponse 是心跳回执。interval_seconds 让客户端不必自己写死间隔；
+// features 用于能力协商，commands 是 F10 的待执行指令（可能为空）。
+type heartbeatResponse struct {
+	Status          string             `json:"status"`
+	IntervalSeconds int                `json:"interval_seconds"`
+	TimeoutSeconds  int                `json:"timeout_seconds"`
+	Features        []string           `json:"features"`
+	Commands        []heartbeatCommand `json:"commands,omitempty"`
+}
+
+// heartbeatCommand 是下发到客户端的最小指令描述，不含任何服务端内部字段。
+type heartbeatCommand struct {
+	ID           int64  `json:"id"`
+	Type         string `json:"type"`
+	DelaySeconds int    `json:"delay_seconds"`
+	Force        bool   `json:"force"`
+	ExpiresAt    string `json:"expires_at"`
+}
+
+// heartbeatFeatures 声明本服务端支持的能力。
+var heartbeatFeatures = []string{"commands"}
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req heartbeatRequest
@@ -71,11 +97,57 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, heartbeatResponse{
+	s.applyAcks(r.Context(), dv.ID, req.Acks)
+
+	// 取走待执行指令：置为 delivered，过期未取走的置为 expired。
+	// 取指令失败不该影响心跳本身——设备上线状态比指令重要。
+	pending, err := s.commands.TakePendingCommands(r.Context(), dv.ID, time.Now())
+	if err != nil {
+		s.logger.Error("读取待下发指令失败", "id", dv.ID, "err", err)
+		pending = nil
+	}
+
+	resp := heartbeatResponse{
 		Status:          store.StatusOnline,
 		IntervalSeconds: int(probe.HeartbeatInterval.Seconds()),
 		TimeoutSeconds:  int(probe.HeartbeatTimeout.Seconds()),
-	})
+		Features:        heartbeatFeatures,
+	}
+	if len(pending) > 0 {
+		resp.Commands = make([]heartbeatCommand, 0, len(pending))
+		for _, cmd := range pending {
+			resp.Commands = append(resp.Commands, heartbeatCommand{
+				ID:           cmd.ID,
+				Type:         cmd.Type,
+				DelaySeconds: cmd.DelaySeconds,
+				Force:        cmd.Force,
+				ExpiresAt:    cmd.ExpiresAt.UTC().Format(time.RFC3339),
+			})
+			s.logger.Info("指令已随心跳下发", "device_id", dv.ID, "command", cmd.Type, "command_id", cmd.ID)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// applyAcks 记录客户端回执。
+// 重复回执（网络重试）与伪造 ID 都只记日志，不让整次心跳失败：
+// 关节点的回执丢掉会导致设备状态卡住，比丢一条审计更糟。
+func (s *Server) applyAcks(ctx context.Context, deviceID int64, acks []heartbeatAck) {
+	for _, ack := range acks {
+		if ack.ID <= 0 {
+			continue
+		}
+		err := s.commands.AckCommand(ctx, deviceID, ack.ID, ack.OK, ack.Message)
+		switch {
+		case err == nil:
+			s.logger.Info("指令执行回执", "device_id", deviceID, "command_id", ack.ID, "ok", ack.OK)
+		case errors.Is(err, store.ErrCommandNotFound):
+			s.logger.Warn("忽略未知指令回执", "device_id", deviceID, "command_id", ack.ID)
+		default:
+			s.logger.Error("写入指令回执失败", "device_id", deviceID, "command_id", ack.ID, "err", err)
+		}
+	}
 }
 
 // findDeviceByMAC 在设备列表里按 MAC 查找。

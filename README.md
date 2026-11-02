@@ -117,6 +117,15 @@ docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.1.0 .
 
 > **在 Windows/macOS 上试用会看不到页面**：Docker Desktop 的 `host` 网络指虚拟机内部的 host，不与 Windows 宿主共享端口（实测容器内 `127.0.0.1:8080` 通、宿主 `127.0.0.1:8080` 与局域网 IP 均不通）。广播包仍能发出，只是浏览器访问不到界面。临时试用可加 `ports: ["8080:8080"]` 并去掉 `network_mode: host`，但那只是调试手段——桥接网络下发不出广播，不能作为部署形态。
 
+## 远程关机/重启（F10）
+
+目标机上的 WolHeartbeat 客户端通过心跳通道取指令：网页点「关机 / 重启」→ 服务端排队 → 随心跳回执下发 → 客户端执行 `shutdown.exe` 并回执。目标机依然**零入站端口**。
+
+- 仅支持「心跳上报」方式且当前在线的设备；延时默认 60 秒（10–600 可调），期间可在目标机执行 `shutdown /a` 撤销，客户端托盘菜单也有「取消关机（撤销）」；
+- 同一设备同时只允许一条未完成指令；5 分钟未被取走自动过期，离线设备拒绝下发；
+- 指令记录可审计：`GET /api/commands`；客户端演练模式 `--dry-run` 或环境变量 `WOL_SHUTDOWN_DRYRUN=1` 只记录不执行；
+- 契约与验收：`docs/F10-command-contract.md`、`docs/F10-acceptance.md`。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
