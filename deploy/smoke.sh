@@ -12,6 +12,7 @@
 #   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --probe tcp:192.168.1.20:445
 #   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --probe ping:192.168.1.20
 #   ./smoke.sh --host 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --probe heartbeat   # 验心跳链路
+#   ./smoke.sh --host 192.168.1.10 --rdp 1        # 验远程桌面票据（设备需已启用 RDP）
 #
 # 口令取自 --password 或环境变量 WOL_ADMIN_PASSWORD；不写入任何文件。
 # 退出码：0 = 全部通过，1 = 有失败项。
@@ -25,6 +26,7 @@ MAC=""
 BROADCAST=""
 PROBE="none"
 CHECK_WAIT=150
+RDP_ID=""
 
 CURL=(curl -sS --noproxy '*' --max-time 15)
 
@@ -40,7 +42,7 @@ ok() { PASS=$((PASS + 1)); SUMMARY+=("PASS  $1"); printf '  %s  %s\n' "$(green P
 bad() { FAIL=$((FAIL + 1)); SUMMARY+=("FAIL  $1"); printf '  %s  %s\n' "$(red FAIL)" "$1"; }
 die() { printf '\n%s %s\n' "$(red '[中止]')" "$1"; exit 1; }
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -56,6 +58,8 @@ while [ $# -gt 0 ]; do
         --broadcast=*) BROADCAST="${1#*=}"; shift ;;
         --probe)     PROBE="${2:-}"; shift 2 ;;
         --probe=*)   PROBE="${1#*=}"; shift ;;
+        --rdp)       RDP_ID="${2:-}"; shift 2 ;;
+        --rdp=*)     RDP_ID="${1#*=}"; shift ;;
         --wait)      CHECK_WAIT="${2:-}"; shift 2 ;;
         --wait=*)    CHECK_WAIT="${1#*=}"; shift ;;
         -h|--help)   usage; exit 0 ;;
@@ -236,6 +240,47 @@ else
     else
         bad "触发校验返回 $CHECK_CODE（期望 202）"
     fi
+fi
+
+# ---------------------------------------------------------------- 6.5 远程桌面
+
+if [ -n "$RDP_ID" ]; then
+    section "6.5 远程桌面票据（设备 $RDP_ID）"
+
+    RDP_BODY_FILE="/tmp/smoke-rdp.json"
+    RDP_CODE="$("${CURL[@]}" -o "$RDP_BODY_FILE" -w '%{http_code}' \
+        -X POST "$BASE/api/devices/$RDP_ID/rdp-session" -H "Authorization: Bearer $TOKEN")"
+    RDP_BODY="$(cat "$RDP_BODY_FILE" 2>/dev/null)"
+    RDP_URL="$(printf '%s' "$RDP_BODY" | json_str url)"
+    RDP_ERR="$(printf '%s' "$RDP_BODY" | json_str error)"
+
+    case "$RDP_CODE" in
+        200)
+            ok "已签发票据（${RDP_BODY}）"
+            LOC="$("${CURL[@]}" -o /dev/null -w '%{redirect_url}' "$BASE$RDP_URL")"
+            if printf '%s' "$LOC" | grep -q '/#/?data='; then
+                ok "票据可兑换，跳转地址含 Guacamole 载荷"
+            else
+                bad "兑换后未跳转到 Guacamole：${LOC:-无 Location}"
+            fi
+            AGAIN="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$BASE$RDP_URL")"
+            if [ "$AGAIN" = "410" ]; then
+                ok "同一票据第二次使用被拒（410，一次性生效）"
+            else
+                bad "票据可重复使用：第二次返回 $AGAIN（期望 410）"
+            fi
+            ;;
+        503)
+            bad "远程桌面未配置（$RDP_ERR）：检查 .env 里的 WOL_GUAC_URL / WOL_GUAC_SECRET，并用 --profile rdp 启动"
+            ;;
+        400|409)
+            printf '  跳过：设备状态不满足（HTTP %s，%s）\n' "$RDP_CODE" "${RDP_ERR:-未知}"
+            printf '  说明：需要「心跳设备 + 在线 + 已启用 RDP + 已上报 IP」。\n'
+            ;;
+        *)
+            bad "rdp-session 返回 $RDP_CODE：${RDP_BODY:-无响应}"
+            ;;
+    esac
 fi
 
 # ---------------------------------------------------------------- 7 清理

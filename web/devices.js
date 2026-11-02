@@ -19,7 +19,12 @@
   var TERMINAL = { online: true, timeout: true, failed: true };
   // 指令是异步执行的：下发后至少等一个心跳周期，这里给足 5 分钟。
   var COMMAND_WAIT_MS = 300000;
-  var COMMAND_LABEL = { shutdown: '关机', restart: '重启' };
+  var COMMAND_LABEL = {
+    shutdown: '关机',
+    restart: '重启',
+    enable_rdp: '启用远程桌面',
+    disable_rdp: '关闭远程桌面',
+  };
   var COMMAND_TEXT = {
     pending: '等待客户端取走（下一个心跳周期）',
     delivered: '客户端已接收，正在执行',
@@ -84,8 +89,9 @@
     deletingId: null,
     commands: new Map(), // device_id -> 最近一条指令（服务端返回的形状）
     commandWatch: new Map(), // device_id -> 停止轮询的截止毫秒数
-    confirmMode: null, // 'delete' | 'power'
+    confirmMode: null, // 'delete' | 'power' | 'rdp' | 'rdp-toggle'
     powerRequest: null, // { id, type }
+    rdpRequest: null, // { id, enable }
   };
 
   var noticeTimer = null;
@@ -139,6 +145,111 @@
     node.appendChild(el('span', 'dot'));
     node.appendChild(el('span', null, meta.label));
     return node;
+  }
+
+  // ---------- F11 M2：远程桌面 ----------
+
+  // 状态 chip：未启用时用 muted，避免和"离线"抢注意力。
+  function rdpChip(status) {
+    var on = Boolean(status && status.rdp_enabled);
+    var node = el('span', 'chip chip--' + (on ? 'ok' : 'muted') + ' chip--rdp');
+    node.appendChild(el('span', 'dot'));
+    node.appendChild(el('span', null, on ? 'RDP 已启用' : 'RDP 未启用'));
+    if (!on) node.title = '在目标机上点「启用远程桌面」，或下发 enable_rdp 指令';
+    return node;
+  }
+
+  function askRdp(id) {
+    var dv = findDevice(id);
+    if (!dv) return;
+
+    var status = state.statuses.get(id);
+    if (!status || status.status !== 'online') {
+      notice('设备当前不在线，无法建立远程桌面', 'error');
+      return;
+    }
+
+    var on = Boolean(status.rdp_enabled);
+    state.rdpRequest = { id: id, enable: !on };
+    state.confirmMode = on ? 'rdp' : 'rdp-toggle';
+
+    if (on) {
+      dom.confirmTitle.textContent = '打开远程桌面';
+      dom.confirmText.textContent = '将为「' + dv.name + '」创建一次性会话：票据 ' +
+        '60 秒内有效且只能用一次，过期需要重新点击。进入桌面后需要输入 Windows 账号口令。';
+      dom.confirmOk.textContent = '打开';
+    } else {
+      dom.confirmTitle.textContent = '启用远程桌面';
+      dom.confirmText.textContent = '将向「' + dv.name + '」下发启用指令：客户端会打开 RDP 开关、' +
+        '按规则名放行防火墙并启用 NLA。客户端需以管理员身份运行，否则会失败并回执原因。';
+      dom.confirmOk.textContent = '下发指令';
+    }
+    dom.confirm.showModal();
+  }
+
+  async function doRdpSession() {
+    var req = state.rdpRequest;
+    if (!req) return;
+
+    dom.confirmOk.disabled = true;
+    try {
+      var resp = await request('POST', '/api/devices/' + req.id + '/rdp-session');
+      dom.confirm.close();
+      // 票据一次性：先开窗口再提示，避免用户复制到已经失效的地址。
+      var win = window.open(resp.url, '_blank', 'noopener');
+      if (!win) {
+        notice('浏览器拦截了新标签页：请允许弹窗后重试（票据 ' + resp.expires_in + ' 秒内有效）', 'error');
+      } else {
+        notice('已打开远程桌面，票据 ' + resp.expires_in + ' 秒内有效，过期请重新点击', 'ok');
+      }
+    } catch (err) {
+      dom.confirm.close();
+      notice(err.message, 'error');
+    } finally {
+      dom.confirmOk.disabled = false;
+    }
+  }
+
+  async function doRdpToggle() {
+    var req = state.rdpRequest;
+    if (!req) return;
+
+    dom.confirmOk.disabled = true;
+    try {
+      var cmd = await request('POST', '/api/devices/' + req.id + '/commands', {
+        type: req.enable ? 'enable_rdp' : 'disable_rdp',
+      });
+      dom.confirm.close();
+      state.commands.set(req.id, cmd);
+      state.commandWatch.set(req.id, Date.now() + COMMAND_WAIT_MS);
+      startPolling();
+      notice((req.enable ? '启用' : '关闭') + '远程桌面指令已下发，等待客户端执行…', 'ok');
+      render();
+    } catch (err) {
+      dom.confirm.close();
+      notice(err.message, 'error');
+    } finally {
+      dom.confirmOk.disabled = false;
+    }
+  }
+
+  function askRdpOff(id) {
+    var dv = findDevice(id);
+    if (!dv) return;
+
+    var status = state.statuses.get(id);
+    if (!status || status.status !== 'online') {
+      notice('设备当前不在线，无法下发关闭指令', 'error');
+      return;
+    }
+
+    state.rdpRequest = { id: id, enable: false };
+    state.confirmMode = 'rdp-toggle';
+    dom.confirmTitle.textContent = '关闭远程桌面';
+    dom.confirmText.textContent = '将向「' + dv.name + '」下发关闭指令：3389 会停止监听，' +
+      '已经打开的会话不受影响。之后需要重新启用才能再用远程桌面。';
+    dom.confirmOk.textContent = '确认关闭';
+    dom.confirm.showModal();
   }
 
   function commandNote(id) {
@@ -234,6 +345,8 @@
     var head = el('div', 'card-head');
     head.appendChild(el('h2', 'card-title', dv.name));
     head.appendChild(chip(phase, status, dv));
+    // 远程桌面状态只对心跳设备有意义：其它校验方式没有下发通道，也就打不开 RDP。
+    if (dv.probe_type === 'heartbeat') head.appendChild(rdpChip(status));
     node.appendChild(head);
 
     var facts = el('div', 'facts');
@@ -258,6 +371,25 @@
 
     // 只有心跳设备有下发通道，其余设备不显示关机/重启，避免点了必然失败。
     if (dv.probe_type === 'heartbeat') {
+      var rdpOn = Boolean(status && status.rdp_enabled);
+      var online = Boolean(status && status.status === 'online');
+      var rdp = el('button', 'btn', rdpOn ? '远程桌面' : '启用远程桌面');
+      rdp.type = 'button';
+      rdp.dataset.act = 'rdp';
+      rdp.disabled = !online || Boolean(phase);
+      if (!online) rdp.title = '设备离线，无法建立远程桌面';
+      else if (!rdpOn) rdp.title = '目标机尚未启用远程桌面，点击下发启用指令';
+      actions.appendChild(rdp);
+
+      if (rdpOn) {
+        var rdpOff = el('button', 'btn btn--ghost', '关闭 RDP');
+        rdpOff.type = 'button';
+        rdpOff.dataset.act = 'rdp-off';
+        rdpOff.disabled = !online || Boolean(phase);
+        rdpOff.title = '关闭目标机的远程桌面（不影响已打开的会话）';
+        actions.appendChild(rdpOff);
+      }
+
       var restart = el('button', 'btn', '重启');
       restart.type = 'button';
       restart.dataset.act = 'restart';
@@ -670,6 +802,8 @@
       if (act === 'wake') wake(id);
       else if (act === 'shutdown') askPower(id, 'shutdown');
       else if (act === 'restart') askPower(id, 'restart');
+      else if (act === 'rdp') askRdp(id);
+      else if (act === 'rdp-off') askRdpOff(id);
       else if (act === 'edit') openEditor(id);
       else if (act === 'delete') askDelete(id);
     });
@@ -695,6 +829,8 @@
 
     dom.confirmOk.addEventListener('click', function () {
       if (state.confirmMode === 'power') doPower();
+      else if (state.confirmMode === 'rdp') doRdpSession();
+      else if (state.confirmMode === 'rdp-toggle') doRdpToggle();
       else doDelete();
     });
     dom.confirmCancel.addEventListener('click', function () {
@@ -703,6 +839,7 @@
     dom.confirm.addEventListener('close', function () {
       state.deletingId = null;
       state.powerRequest = null;
+      state.rdpRequest = null;
       state.confirmMode = null;
     });
   }

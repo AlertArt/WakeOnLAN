@@ -88,8 +88,13 @@ func TestAckCommand(t *testing.T) {
 		t.Fatalf("TakePendingCommands() error = %v", err)
 	}
 
-	if err := db.AckCommand(ctx, 1, cmd.ID, true, "已执行 shutdown /s /t 60"); err != nil {
+	acked, err := db.AckCommand(ctx, 1, cmd.ID, true, "已执行 shutdown /s /t 60")
+	if err != nil {
 		t.Fatalf("AckCommand() error = %v", err)
+	}
+	// 回执返回最新快照：handler 要靠 Type 判断是不是 RDP 指令。
+	if acked.Type != cmd.Type || acked.Status != CommandStatusDone {
+		t.Fatalf("acked = %+v, want type %s + done", acked, cmd.Type)
 	}
 
 	list, err := db.ListCommands(ctx, 1, 10)
@@ -104,12 +109,12 @@ func TestAckCommand(t *testing.T) {
 	}
 
 	// 重复回执按"不存在"处理，避免客户端重试覆盖结果。
-	if err := db.AckCommand(ctx, 1, cmd.ID, false, "again"); !errors.Is(err, ErrCommandNotFound) {
+	if _, err := db.AckCommand(ctx, 1, cmd.ID, false, "again"); !errors.Is(err, ErrCommandNotFound) {
 		t.Fatalf("重复回执 error = %v, want ErrCommandNotFound", err)
 	}
 
 	// 换个设备 ID 回执同样拒绝（防止越权）。
-	if err := db.AckCommand(ctx, 2, cmd.ID, false, "wrong device"); !errors.Is(err, ErrCommandNotFound) {
+	if _, err := db.AckCommand(ctx, 2, cmd.ID, false, "wrong device"); !errors.Is(err, ErrCommandNotFound) {
 		t.Fatalf("跨设备回执 error = %v, want ErrCommandNotFound", err)
 	}
 }

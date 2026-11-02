@@ -134,6 +134,17 @@ docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:2.0.0-beta.1 .
 - 契约向后兼容：旧客户端不带 `metrics` 字段行为完全不变；服务端对异常值钳制、类型错丢弃，坏指标不影响心跳；
 - 计划与验收：`docs/F11-remote-access-plan.md`（后续 M2 远程桌面 / M3 网络回滚安全网）、`docs/F11-metrics-acceptance.md`。
 
+## 远程桌面（F11 M2）
+
+网页点「远程桌面」→ 自动开启目标机 RDP → 浏览器新标签页进入完整 Windows 桌面（Guacamole 网关，手机/平板可用）。
+
+- 服务端新增 `enable_rdp` / `disable_rdp` 指令：客户端打开 RDP 开关、按**规则名**放行防火墙（跨语言有效）、启用 NLA 并确保 TermService 运行，做完回读注册表才回执 `rdp_enabled`——服务端只信回执，不猜测；
+- 会话票据一次性、60 秒过期：`POST /api/devices/{id}/rdp-session` 返回 `/rdp/<ticket>`，兑换时生成 Guacamole 载荷并 302 跳转，载荷放在 URL fragment 里（不进服务端与访问日志），日志中票据固定记为占位符；
+- 采用官方 `guacamole-auth-json` 扩展：wold 与 Guacamole 共享一个 32 位十六进制密钥（`WOL_GUAC_SECRET`），**不需要数据库、不需要管理员 REST API**；guacd/guacamole 容器放在 compose 的 `rdp` profile 下，不启用远程桌面则完全不会启动；
+- 未配置 `WOL_GUAC_URL`/`WOL_GUAC_SECRET` 时功能降级：接口返回 503 与明确提示，其余功能不受影响；
+- 目标机需以管理员身份运行客户端（或用 SYSTEM 计划任务启动），否则 reg 写入失败并如实回执原因；
+- 计划与验收：`docs/F11-remote-access-plan.md`、`docs/F11-M2-acceptance.md`；部署见 `deploy/README.md` 第九节。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -143,6 +154,9 @@ docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:2.0.0-beta.1 .
 | `WOL_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `WOL_ADMIN_PASSWORD` | **无（必填）** | 登录口令，由环境注入；为空时进程拒绝启动，**禁止写入代码或镜像** |
 | `WOL_TOKEN_TTL` | `168h` | 登录令牌有效期，Go duration 写法（如 `12h`、`30m`） |
+| `WOL_GUAC_URL` | 空 | Guacamole 访问前缀（如 `https://nas.example.com:8088`），**必须是手机/外网能打开的地址**；与 `WOL_GUAC_SECRET` 必须同时设置或同时留空，只配一半拒绝启动 |
+| `WOL_GUAC_SECRET` | 空 | 与 Guacamole 共享的 32 位十六进制密钥（`openssl rand -hex 16` 生成），不得写入代码或镜像 |
+| `WOL_RDP_PORT` | `3389` | 目标机 RDP 端口 |
 
 安全提示：令牌为明文 Bearer，服务设计为**局域网直连**使用。不要暴露到公网；不建议放在反向代理后面（会因共享来源 IP 让限流误伤所有人）。
 

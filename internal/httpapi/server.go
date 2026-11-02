@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"wol/internal/auth"
+	"wol/internal/guac"
 	"wol/internal/store"
 )
 
@@ -39,6 +41,11 @@ type Server struct {
 	auth     *auth.Authenticator
 	logger   *slog.Logger
 	webDir   string
+
+	// M2 远程桌面：guacCfg.BaseURL 为空表示未配置，相关接口返回 503 而不是 500。
+	guacCfg    guac.Config
+	rdpTickets *guac.TicketStore
+	rdpPort    int
 }
 
 // New 构造 Server。
@@ -53,7 +60,22 @@ func New(db Pinger, devices DeviceStore, waker Waker, checker Checker, statuses 
 		auth:     authn,
 		logger:   logger,
 		webDir:   webDir,
+		rdpPort:  3389,
 	}
+}
+
+// EnableRDP 装配远程桌面能力（M2）。
+// 不调用或 cfg 为空时保持"未配置"：相关接口返回明确的 503，其余功能不受影响。
+func (s *Server) EnableRDP(cfg guac.Config, port int) {
+	if cfg.BaseURL == "" {
+		return
+	}
+	if port <= 0 || port > 65535 {
+		port = 3389
+	}
+	s.guacCfg = cfg
+	s.rdpPort = port
+	s.rdpTickets = guac.NewTicketStore(cfg.TTL)
 }
 
 // Routes 返回完整路由表。新增接口必须在此登记，便于一处审阅。
@@ -91,6 +113,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/devices/{id}/commands", guard(s.handleCreateCommand))
 	mux.Handle("GET /api/devices/{id}/commands", guard(s.handleListDeviceCommands))
 	mux.Handle("GET /api/commands", guard(s.handleListCommands))
+
+	// F11-M2 远程桌面：签发票据需要管理令牌；兑换票据不需要——
+	// 票据本身就是凭据（128 位随机、60 秒、一次性），见 rdp.go。
+	mux.Handle("POST /api/devices/{id}/rdp-session", guard(s.handleRDPSession))
+	mux.HandleFunc("GET /rdp/{ticket}", s.handleRDPTicket)
 
 	// 静态资源：登录页需要先加载出来才能输入口令，因此保持公开。
 	// 页面内不含任何设备数据，数据一律走受保护的 /api/。
@@ -145,8 +172,18 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		s.logger.Info("http",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", logPath(r.URL.Path),
 			"dur_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// logPath 把票据路径替换成占位符再落日志。
+// 票据是 60 秒内可换取 Guacamole 会话的唯一凭据，写进日志等于把入口留了一份副本。
+func logPath(path string) string {
+	const prefix = "/rdp/"
+	if strings.HasPrefix(path, prefix) {
+		return prefix + "<ticket>"
+	}
+	return path
 }

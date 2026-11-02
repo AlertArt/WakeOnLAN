@@ -161,6 +161,8 @@ h2 {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  /* 同时有「在线」与「RDP 已启用」两个 chip 时，窄屏允许换行，别去挤标题。 */
+  flex-wrap: wrap;
 }
 
 .card-title {
@@ -220,6 +222,12 @@ h2 {
   color: #a12622;
 }
 
+.chip--rdp {
+  /* RDP chip 是次要信息：比状态 chip 略小一点，避免两个 chip 抢注意力。 */
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .chip--busy .dot {
   animation: pulse 1.1s ease-in-out infinite;
 }
@@ -235,7 +243,13 @@ h2 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chip--busy .dot {
+  .chip--rdp {
+  /* RDP chip 是次要信息：比状态 chip 略小一点，避免两个 chip 抢注意力。 */
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.chip--busy .dot {
     animation: none;
   }
 }
@@ -361,6 +375,8 @@ h2 {
   border-radius: 10px;
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  /* 「启用远程桌面」这类长文案不允许在按钮里断行，宁可让卡片动作区换行。 */
+  white-space: nowrap;
 }
 
 .btn:hover:not(:disabled) {

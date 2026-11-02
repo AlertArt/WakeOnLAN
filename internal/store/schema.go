@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS device (
 	probe_checked_at TEXT    NOT NULL DEFAULT '',
 	metrics_json     TEXT    NOT NULL DEFAULT '',
 	metrics_at       TEXT    NOT NULL DEFAULT '',
+	rdp_enabled      INTEGER NOT NULL DEFAULT 0,
 	created_at       TEXT    NOT NULL,
 	updated_at       TEXT    NOT NULL
 );
@@ -66,6 +67,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 		{"probe_checked_at", `ALTER TABLE device ADD COLUMN probe_checked_at TEXT NOT NULL DEFAULT ''`},
 		{"metrics_json", `ALTER TABLE device ADD COLUMN metrics_json TEXT NOT NULL DEFAULT ''`},
 		{"metrics_at", `ALTER TABLE device ADD COLUMN metrics_at TEXT NOT NULL DEFAULT ''`},
+		{"rdp_enabled", `ALTER TABLE device ADD COLUMN rdp_enabled INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, col := range added {
 		exists, err := d.hasColumn(ctx, "device", col.name)

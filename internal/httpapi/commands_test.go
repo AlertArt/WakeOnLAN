@@ -62,9 +62,9 @@ func (f *fakeCommandStore) TakePendingCommands(_ context.Context, deviceID int64
 	return out, nil
 }
 
-func (f *fakeCommandStore) AckCommand(_ context.Context, deviceID, commandID int64, ok bool, message string) error {
+func (f *fakeCommandStore) AckCommand(_ context.Context, deviceID, commandID int64, ok bool, message string) (store.Command, error) {
 	if f.ackErr != nil {
-		return f.ackErr
+		return store.Command{}, f.ackErr
 	}
 	for i := range f.items {
 		if f.items[i].ID != commandID || f.items[i].DeviceID != deviceID ||
@@ -78,9 +78,9 @@ func (f *fakeCommandStore) AckCommand(_ context.Context, deviceID, commandID int
 		}
 		f.items[i].Message = message
 		f.items[i].FinishedAt = time.Now()
-		return nil
+		return f.items[i], nil
 	}
-	return store.ErrCommandNotFound
+	return store.Command{}, store.ErrCommandNotFound
 }
 
 func (f *fakeCommandStore) ListCommands(_ context.Context, deviceID int64, limit int) ([]store.Command, error) {
@@ -337,5 +337,93 @@ func TestListCommands(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/devices/1/commands", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("设备指令列表 status = %d", rec.Code)
+	}
+}
+
+// RDP 开关指令不带倒计时：写入 0，前端也不必给用户选"几秒后执行"。
+func TestCreateRDPCommand(t *testing.T) {
+	h, commands, _ := newCommandTestServer(t)
+
+	rec := postCommand(h, "/api/devices/1/commands", `{"type":"enable_rdp"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201，body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp commandResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if resp.Type != store.CommandEnableRDP {
+		t.Fatalf("type = %q", resp.Type)
+	}
+	if resp.DelaySeconds != 0 {
+		t.Fatalf("delay_seconds = %d，RDP 指令应为 0", resp.DelaySeconds)
+	}
+	if commands.items[0].DelaySeconds != 0 {
+		t.Fatalf("落库 delay = %d", commands.items[0].DelaySeconds)
+	}
+
+	// 同一设备同时只允许一条未完成指令，这里顺带锁住这条规则。
+	if rec := postCommand(h, "/api/devices/1/commands", `{"type":"disable_rdp"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("第二条指令 status = %d，want 409，body = %s", rec.Code, rec.Body.String())
+	}
+
+	// disable_rdp 换一台干净的服务器同样受理。
+	h2, commands2, _ := newCommandTestServer(t)
+	if rec := postCommand(h2, "/api/devices/1/commands", `{"type":"disable_rdp"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("disable_rdp status = %d，body = %s", rec.Code, rec.Body.String())
+	}
+	if commands2.items[0].Type != store.CommandDisableRDP {
+		t.Fatalf("落库 type = %q", commands2.items[0].Type)
+	}
+}
+
+// 客户端回执自带的 rdp_enabled 是设备 RDP 状态的唯一来源。
+func TestHeartbeatAckUpdatesRDPState(t *testing.T) {
+	h, _, status, commands := newHeartbeatServerWithCommands(t)
+
+	if _, err := commands.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandEnableRDP,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+
+	// 第一次心跳把 pending 取走（→ delivered），回执只接受 delivered。
+	if rec := postHeartbeat(h, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("取指令心跳 status = %d", rec.Code)
+	}
+
+	body := `{"mac":"AA:BB:CC:DD:EE:FF","secret":"` + testHeartbeatSecret +
+		`","acks":[{"id":1,"ok":true,"message":"RDP 已启用","rdp_enabled":true}]}`
+	if rec := postHeartbeat(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("回执心跳 status = %d，body = %s", rec.Code, rec.Body.String())
+	}
+	if got, ok := status.rdp[1]; !ok || !got {
+		t.Fatalf("rdp_enabled 未写入：%v", status.rdp)
+	}
+}
+
+// 失败的回执、非 RDP 指令的回执都不改动 RDP 状态：
+// 宁可保持原状态，也不要因为一条关机回执把 RDP 标成已启用。
+func TestHeartbeatAckDoesNotGuessRDPState(t *testing.T) {
+	h, _, status, commands := newHeartbeatServerWithCommands(t)
+
+	if _, err := commands.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandShutdown, DelaySeconds: 60,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	if rec := postHeartbeat(h, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("取指令心跳 status = %d", rec.Code)
+	}
+
+	// 关机回执即便带了 rdp_enabled 也必须忽略。
+	body := `{"mac":"AA:BB:CC:DD:EE:FF","secret":"` + testHeartbeatSecret +
+		`","acks":[{"id":1,"ok":true,"message":"ok","rdp_enabled":true}]}`
+	if rec := postHeartbeat(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("回执心跳 status = %d", rec.Code)
+	}
+	if len(status.rdp) != 0 {
+		t.Fatalf("非 RDP 指令不应更新 RDP 状态：%v", status.rdp)
 	}
 }

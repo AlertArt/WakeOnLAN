@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,14 @@ type Config struct {
 	AdminPassword string
 	// TokenTTL 是登录令牌的有效期，默认 7 天。
 	TokenTTL time.Duration
+
+	// GuacURL 是 Guacamole 的访问前缀（如 https://nas.example.com/guacamole）。
+	// GuacURL 与 GuacSecret 都为空表示不启用远程桌面：功能降级，接口返回明确错误。
+	GuacURL string
+	// GuacSecret 是与 Guacamole 共享的 32 位十六进制密钥，对应 json-secret-key。
+	GuacSecret string
+	// RDPPort 是目标机 RDP 端口，默认 3389。
+	RDPPort int
 }
 
 // Load 读取环境变量并做最小校验。
@@ -37,6 +46,7 @@ func Load() (Config, error) {
 		LogLevel:      "info",
 		AdminPassword: "",
 		TokenTTL:      DefaultTokenTTL,
+		RDPPort:       3389,
 	}
 
 	if v := os.Getenv(EnvPrefix + "PORT"); v != "" {
@@ -64,6 +74,22 @@ func Load() (Config, error) {
 		}
 		c.TokenTTL = d
 	}
+	if v := os.Getenv(EnvPrefix + "RDP_PORT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return Config{}, fmt.Errorf("%sRDP_PORT 非法: %q", EnvPrefix, v)
+		}
+		c.RDPPort = p
+	}
+	c.GuacURL = strings.TrimSpace(os.Getenv(EnvPrefix + "GUAC_URL"))
+	c.GuacSecret = strings.TrimSpace(os.Getenv(EnvPrefix + "GUAC_SECRET"))
+	// 只配一半是最容易犯的配置错误：一边设了一边没设，功能静默不生效。
+	// 这里直接拒绝启动，比让用户对着"远程桌面按钮点了没反应"排查要省事。
+	if (c.GuacURL == "") != (c.GuacSecret == "") {
+		return Config{}, fmt.Errorf("%sGUAC_URL 与 %sGUAC_SECRET 必须同时设置或同时留空（远程桌面功能）",
+			EnvPrefix, EnvPrefix)
+	}
+
 	c.AdminPassword = os.Getenv(EnvPrefix + "ADMIN_PASSWORD")
 
 	// 口令没有默认值：给一个默认口令等于把"没配置"变成"配了个人人都知道的"，比不设防更危险。

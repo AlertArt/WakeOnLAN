@@ -27,6 +27,8 @@ const (
 // CheckedAt 为零值表示从未产生过终态结论。
 // ProbeType 供调用方区分「主动探测」与「心跳上报」：后者的结论由最近心跳时间推算。
 // MetricsJSON 是 F11 心跳附带指标的原始 JSON（可能为空），MetricsAt 为其上报时间。
+// RDPEnabled 是目标机 RDP 是否可用的结论：只由客户端 enable_rdp/disable_rdp 的回执改写，
+// 服务端不猜（M2 契约）。
 type ProbeStatus struct {
 	DeviceID    int64
 	Status      string
@@ -35,6 +37,7 @@ type ProbeStatus struct {
 	CheckedAt   time.Time
 	MetricsJSON string
 	MetricsAt   time.Time
+	RDPEnabled  bool
 }
 
 // MarkChecking 标记校验开始。不刷新 checked_at：
@@ -85,7 +88,9 @@ func (d *DB) setProbeStatus(ctx context.Context, deviceID int64, status, message
 // 无设备时返回空切片而非 nil，保证 JSON 序列化为 []。
 func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, probe_status, probe_message, probe_type, probe_checked_at, metrics_json, metrics_at FROM device ORDER BY id`)
+		`SELECT id, probe_status, probe_message, probe_type, probe_checked_at,
+		        metrics_json, metrics_at, rdp_enabled
+		   FROM device ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("查询校验状态失败: %w", err)
 	}
@@ -98,10 +103,13 @@ func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 			checked string
 			metrics string
 			metAt   string
+			rdp     int
 		)
-		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &ps.ProbeType, &checked, &metrics, &metAt); err != nil {
+		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &ps.ProbeType, &checked,
+			&metrics, &metAt, &rdp); err != nil {
 			return nil, fmt.Errorf("读取校验状态失败: %w", err)
 		}
+		ps.RDPEnabled = rdp != 0
 		if checked != "" {
 			t, err := parseTime(checked)
 			if err != nil {
@@ -123,6 +131,20 @@ func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 		return nil, fmt.Errorf("遍历校验状态失败: %w", err)
 	}
 	return list, nil
+}
+
+// SetRDPEnabled 记录目标机 RDP 是否可用。
+// 只由客户端 enable_rdp/disable_rdp 的回执调用：服务端既没有能力也没有理由去猜。
+func (d *DB) SetRDPEnabled(ctx context.Context, deviceID int64, enabled bool) error {
+	res, err := d.sql.ExecContext(ctx,
+		`UPDATE device SET rdp_enabled = ? WHERE id = ?`, boolToInt(enabled), deviceID)
+	if err != nil {
+		return fmt.Errorf("写入 RDP 状态失败: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // MarkInterrupted 把遗留的 checking 重置为 pending，返回处理的行数。

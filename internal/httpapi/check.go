@@ -25,6 +25,7 @@ type StatusStore interface {
 	ListProbeStatus(ctx context.Context) ([]store.ProbeStatus, error)
 	MarkOnline(ctx context.Context, deviceID int64) error
 	SaveMetrics(ctx context.Context, deviceID int64, m *store.Metrics, at time.Time) error
+	SetRDPEnabled(ctx context.Context, deviceID int64, enabled bool) error
 }
 
 // checkResponse 是触发接口的回执，只允许这两个键（见 docs/E3-contract.md）。
@@ -42,6 +43,9 @@ type probeStatusResponse struct {
 	CheckedAt string          `json:"checked_at"`
 	Metrics   json.RawMessage `json:"metrics,omitempty"`
 	MetricsAt string          `json:"metrics_at,omitempty"`
+	// RDPEnabled 是 M2 追加的键：目标机是否已启用远程桌面。
+	// 只由客户端 enable_rdp/disable_rdp 的回执改写，恒存在（老设备为 false）。
+	RDPEnabled bool `json:"rdp_enabled"`
 }
 
 func (s *Server) handleStartCheck(w http.ResponseWriter, r *http.Request) {
@@ -106,9 +110,10 @@ func (s *Server) handleListStatus(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, item := range list {
 		resp := probeStatusResponse{
-			DeviceID: item.DeviceID,
-			Status:   item.Status,
-			Message:  item.Message,
+			DeviceID:   item.DeviceID,
+			Status:     item.Status,
+			Message:    item.Message,
+			RDPEnabled: item.RDPEnabled,
 		}
 		if !item.CheckedAt.IsZero() {
 			resp.CheckedAt = item.CheckedAt.Format(time.RFC3339)

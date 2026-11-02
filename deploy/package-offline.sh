@@ -5,19 +5,21 @@
 #   ./package-offline.sh --arch arm64             # ARM 机型
 #   ./package-offline.sh --apt-mirror mirrors.aliyun.com   # 国内构建
 #   ./package-offline.sh --skip-build             # 复用本地已有镜像
+#   ./package-offline.sh --with-guac              # 附带 guacamole/guacd（远程桌面）
 #
 # 产物在 dist/：镜像 tar、tar.gz、compose 文件、.env 样例、校验和、安装说明。
 
 set -euo pipefail
 
-VERSION="${VERSION:-1.1.0}"
+VERSION="${VERSION:-2.0.0-beta.2}"
 ARCH="amd64"
 APT_MIRROR=""
 SKIP_BUILD=0
 OUT=""
+WITH_GUAC=0
 
 usage() {
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -27,6 +29,7 @@ while [ $# -gt 0 ]; do
         --apt-mirror)  APT_MIRROR="${2:-}"; shift 2 ;;
         --apt-mirror=*) APT_MIRROR="${1#*=}"; shift ;;
         --skip-build)  SKIP_BUILD=1; shift ;;
+        --with-guac)   WITH_GUAC=1; shift ;;
         --out)         OUT="${2:-}"; shift 2 ;;
         -h|--help)     usage; exit 0 ;;
         *) echo "未知参数：$1" >&2; usage; exit 2 ;;
@@ -47,6 +50,7 @@ command -v docker >/dev/null 2>&1 || {
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${OUT:-$ROOT/dist}"
 IMAGE="wol:$VERSION"
+GUAC_VERSION="${GUAC_VERSION:-1.6.0}"
 TAR="wol-${VERSION}-${ARCH}.tar"
 
 mkdir -p "$OUT"
@@ -110,12 +114,42 @@ fi
 
 gzip -c "$OUT/$TAR" > "$OUT/$TAR.gz"
 
+# 远程桌面可选：把 guacamole 与 guacd 一起导出，NAS 无外网也能用。
+# 两个镜像分别打包（OCI→docker-archive 的转换脚本一次处理一个镜像）。
+if [ "$WITH_GUAC" -eq 1 ]; then
+    echo "== 远程桌面镜像 =="
+    for spec in "guacamole/guacd:$GUAC_VERSION" "guacamole/guacamole:$GUAC_VERSION"; do
+        name="$(echo "$spec" | cut -d: -f1 | tr '/' '-')-${GUAC_VERSION}-${ARCH}.tar"
+        echo "-- $spec → $name"
+        if ! docker image inspect "$spec" >/dev/null 2>&1; then
+            docker pull --platform "linux/$ARCH" "$spec"
+        fi
+        rm -f "$OUT/$name" "$OUT/$name.gz"
+        (cd "$OUT" && docker save -o "$name" "$spec")
+        if tar -tf "$OUT/$name" | grep -qx "index.json"; then
+            PY="${PYTHON_BIN:-}"
+            if [ -z "$PY" ]; then
+                for c in python3 python py; do
+                    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+                done
+            fi
+            [ -n "$PY" ] || { echo "需要 Python 3 做 OCI 格式转换" >&2; exit 1; }
+            "$PY" "$ROOT/deploy/oci2docker.py" "$OUT/$name" "$OUT/$name.docker" "$spec"
+            mv "$OUT/$name.docker" "$OUT/$name"
+        fi
+        gzip -c "$OUT/$name" > "$OUT/$name.gz"
+    done
+fi
+
 cp "$ROOT/deploy/docker-compose.nas.yml" "$OUT/"
 # compose 里写死的标签要跟着本次 VERSION 走：否则发新版本时包内引用的是旧镜像名，
 # NAS 上 load 完镜像仍会报 "image not found"。只改 services 下的 image 行。
 sed -i.bak "s|^\( *\)image: wol:.*$|\1image: wol:$VERSION|" "$OUT/docker-compose.nas.yml" && rm -f "$OUT/docker-compose.nas.yml.bak"
 cp "$ROOT/deploy/.env.example" "$OUT/.env.example"
 cp "$ROOT/deploy/smoke.sh" "$OUT/smoke.sh"
+# 远程桌面用得到：compose 会挂载这个脚本，让 Guacamole 从同一个 .env 取共享密钥。
+mkdir -p "$OUT/guac-init"
+cp "$ROOT/deploy/guac-init/"*.sh "$OUT/guac-init/"
 chmod +x "$OUT/smoke.sh"
 
 # Windows 心跳客户端随包分发：目标机无法访问 GitHub 时也能直接拷过去用。
@@ -186,7 +220,30 @@ cat > "$OUT/安装说明.txt" <<EOF
 
 注意：网络必须是 host 模式，桥接模式下唤醒包发不出局域网。
 
-七、v2.0.0 新增：远程关机/重启 与 状态指标（需 GUI 客户端）
+七、远程桌面（v2.0.0 起，可选）
+需要多起 guacd + guacamole 两个容器（约 500MB 内存）。步骤：
+1) 生成共享密钥：openssl rand -hex 16        （32 位十六进制）
+2) 编辑 .env，填三项：
+     WOL_GUAC_SECRET=<上一步的 32 位十六进制>
+     WOL_GUAC_URL=http://<NAS的IP>:8088/guacamole     ← 必须是手机/外网也能打开的地址
+     WOL_GUAC_PORT=8088                               （与 NAS 现有端口冲突时改这里）
+3) 导入镜像（离线包带 --with-guac 时才有这两个 tar.gz）：
+     docker load -i guacamole-guacd-1.6.0-amd64.tar.gz
+     docker load -i guacamole-guacamole-1.6.0-amd64.tar.gz
+   或者让 NAS 自己拉：docker pull guacamole/guacd:1.6.0 && docker pull guacamole/guacamole:1.6.0
+4) 带 profile 启动：
+     docker compose -f docker-compose.nas.yml --profile rdp up -d
+5) 网页上对目标机点「启用远程桌面」→ 等 chip 变成「RDP 已启用」→ 点「远程桌面」。
+注意事项：
+- 客户端必须以管理员身份运行，否则写注册表会被拒绝，卡片提示里会写明原因；
+- 网页点「远程桌面」会开新标签页，票据 60 秒内有效且只能用一次；
+- Guacamole 没有用户名/密码登录入口（只启用 JSON 认证），
+  直接访问它的地址只会看到无法使用的登录页；
+- 对外访问建议走 NAS 反代并套 HTTPS，再把 WOL_GUAC_URL 改成反代后的地址；
+- 不启用远程桌面时，照旧 `docker compose -f docker-compose.nas.yml up -d` 即可，
+  两个容器不会启动。
+
+八、v2.0.0 新增：远程关机/重启 与 状态指标（需 GUI 客户端）
 1) 远程关机 / 重启
    网页设备卡片上点"关机"或"重启"，选择倒计时（10-600 秒）并确认；
    指令随目标机下一次心跳（≤60 秒）下发，客户端执行后立刻补发回执，
@@ -206,7 +263,12 @@ cat > "$OUT/安装说明.txt" <<EOF
 EOF
 
 echo "== 校验和 =="
-(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh client/heartbeat.ps1 $([ -f client/WolHeartbeat.exe ] && echo client/WolHeartbeat.exe) > SHA256SUMS && cat SHA256SUMS)
+EXTRA=""
+if [ "$WITH_GUAC" -eq 1 ]; then
+    EXTRA="$(ls "$OUT"/guacamole-*.tar.gz "$OUT"/guacamole-guacd-*.tar.gz 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+fi
+(cd "$OUT" && sha256sum "$TAR" "$TAR.gz" docker-compose.nas.yml .env.example smoke.sh client/heartbeat.ps1 \
+    $([ -f client/WolHeartbeat.exe ] && echo client/WolHeartbeat.exe) $EXTRA > SHA256SUMS && cat SHA256SUMS)
 
 echo
 echo "完成。产物目录：$OUT"

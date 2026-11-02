@@ -56,6 +56,8 @@ type fakeStatusStore struct {
 	onlineIDs []int64
 	// metrics 记录 SaveMetrics 的最近一次写入，供 F11 用例断言。
 	metrics map[int64]store.Metrics
+	// rdp 记录 SetRDPEnabled 的最近一次写入，供 M2 用例断言。
+	rdp map[int64]bool
 }
 
 func (f *fakeStatusStore) ListProbeStatus(context.Context) ([]store.ProbeStatus, error) {
@@ -70,6 +72,22 @@ func (f *fakeStatusStore) MarkOnline(_ context.Context, deviceID int64) error {
 		return f.markErr
 	}
 	f.onlineIDs = append(f.onlineIDs, deviceID)
+	return nil
+}
+
+func (f *fakeStatusStore) SetRDPEnabled(_ context.Context, deviceID int64, enabled bool) error {
+	if f.markErr != nil {
+		return f.markErr
+	}
+	if f.rdp == nil {
+		f.rdp = map[int64]bool{}
+	}
+	f.rdp[deviceID] = enabled
+	for i := range f.items {
+		if f.items[i].DeviceID == deviceID {
+			f.items[i].RDPEnabled = enabled
+		}
+	}
 	return nil
 }
 
@@ -97,8 +115,10 @@ func newFakeStatusStore() *fakeStatusStore { return &fakeStatusStore{items: []st
 
 // 触发校验与状态查询的字段白名单，按字母序。
 var (
-	checkContractKeys  = []string{"started_at", "status"}
-	statusContractKeys = []string{"checked_at", "device_id", "message", "status"}
+	checkContractKeys = []string{"started_at", "status"}
+	// F11-M1 追加 metrics/metrics_at（可选键），M2 追加 rdp_enabled（恒存在）。
+	// 白名单只列"无指标时也一定出现"的键，可选键另有用例单独断言。
+	statusContractKeys = []string{"checked_at", "device_id", "message", "rdp_enabled", "status"}
 )
 
 type checkFixture struct {

@@ -66,7 +66,12 @@
 
 ---
 
-## M2：enable_rdp 指令 + Guacamole 网关接入（预计 5–7 天）
+## M2：enable_rdp 指令 + Guacamole 网关接入（预计 5–7 天）✅ 已完成
+
+> **实施状态（v2.0.0-beta）**：代码、自动化测试与文档全部落地；验收记录见 `docs/F11-M2-acceptance.md`。
+> 方案有一处调整：Guacamole 集成没有走"管理 REST API + JDBC + 数据库"（需要 3 个容器、wold 要持有管理员口令），
+> 改用官方 `guacamole-auth-json` 扩展——wold 用共享密钥签名 JSON 载荷，Guacamole 验签即建连，
+> 容器数降为 2（guacd + guacamole），无数据库、无管理员凭据，符合"NAS 侧不引入数据库"的约束。
 
 **目标**：网页点「远程桌面」→ 自动开启目标机 RDP → 浏览器新标签页进入完整 Windows 桌面；手机/平板/任何浏览器可用。
 
@@ -76,17 +81,17 @@
    - `enable_rdp`：`reg add ... fDenyTSConnections=0` + 防火墙放行远程桌面组 + 确保 NLA（`UserAuthentication=1`）；
    - `disable_rdp`：反向。
 2. `enable_rdp` 成功回执后，服务端把该设备的 `rdp_enabled=1`（由客户端回执携带，服务端不猜测）。
-3. Guacamole 集成（NAS 侧新增容器，wold 不内嵌流媒体）：
-   - `deploy/docker-compose.yml` 增加 `guacd` + `guacamole` 两个服务，仅加入 wold 所在内网，不映射公网端口；凭据经环境变量注入并要求部署时修改；
-   - wold 新增 `internal/guac` 模块：通过 Guacamole 管理 REST API（管理员凭据来自 `WOL_GUAC_URL/WOL_GUAC_ADMIN/WOL_GUAC_PASSWORD` 环境变量）实现——按设备幂等创建 RDP connection（hostname=心跳上报 IP，port 3389，参数 NLA）、查询连接是否存在、生成带过期时间的访问票据；
-   - 接口：`POST /api/devices/{id}/rdp-session` → 校验（心跳设备/在线/rdp_enabled）→ 返回 `{ "url": "https://<nas>/guacamole/#/client/<id>?token=...", "expires_in": 60 }`；票据一次性、60 秒过期；
-   - 未配置 Guacamole 环境变量时接口返回明确错误（功能降级但不出 500）；
-   - 全部 Guacamole 交互有接口级测试（httptest 假服务端）。
+3. Guacamole 集成（NAS 侧新增容器，wold 不内嵌流媒体）——**按 auth-json 方案落地**：
+   - `deploy/docker-compose.nas.yml` 增加 `guacd` + `guacamole` 两个服务，加入独立内网 `guac`，guacd 无宿主端口，guacamole 默认只绑 `127.0.0.1` 可达的 8088；两容器放 `rdp` profile，不启用远程桌面则不启动；凭据经环境变量注入；
+   - wold 新增 `internal/guac` 模块：用共享密钥（`WOL_GUAC_URL/WOL_GUAC_SECRET`）把 RDP 连接参数（hostname=心跳上报 IP，port 3389，NLA）签成 auth-json 载荷——`JSON → HMAC-SHA256（二进制签名前置）→ AES-128-CBC（全零 IV）→ base64`，算法与官方 `guacamole-auth-json` 一致；
+   - 接口：`POST /api/devices/{id}/rdp-session` → 校验（心跳设备/在线/rdp_enabled/已配置 guac/有 IP）→ 签发 32 位十六进制一次性票据（60 秒），返回 `{ "url": "/rdp/<ticket>", "expires_in": 60 }`；浏览器访问 `GET /rdp/{ticket}` 时才把票据兑换成 auth-json 载荷并 302 跳转到 `<WOL_GUAC_URL>/#/?data=<载荷>`（载荷在 fragment 里，不进任何服务端日志）；
+   - 未配置 Guacamole 环境变量时接口返回 503 与明确错误（功能降级但不出 500）；只配一半时进程拒绝启动；
+   - 载荷生成、票据存储与兑换有单元/接口级测试；与真实 Guacamole 1.6.0 做过联调（合法载荷 200、过期载荷 403）。
 4. 心跳 metrics 已含 `ip`（M1），RDP connection 用它；IP 变化时下次创建自动更新。
 
 ### 客户端
 
-1. `CommandRunner` 增加 `enable_rdp` / `disable_rdp` 分支（reg/netsh，逐条执行、逐条记录日志）；
+1. `CommandRunner` 增加 `enable_rdp` / `disable_rdp` 分支：四步走——注册表总开关 → 防火墙**按规则名**放行（`RemoteDesktop-UserMode-In-TCP/UDP`，与系统语言无关；不用组名，中文系统组名是「远程桌面」）→ NLA（`UserAuthentication=1`）→ 确保 TermService 运行；逐条执行、逐条记录日志；
 2. 执行后回执 message 带结果摘要（如 `RDP 已启用` / `防火墙规则失败：...`）；
 3. 非提权运行时若 reg 写入失败，回执 `ok=false, message="需要 SYSTEM/管理员方式运行客户端"`。
 

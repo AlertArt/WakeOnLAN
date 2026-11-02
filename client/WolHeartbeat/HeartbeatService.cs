@@ -287,9 +287,9 @@ public sealed class HeartbeatService : IDisposable
 
                 AppLog.Info($"收到远程指令：{type}，延时 {delay} 秒，强制={force}");
 
-                var (ok, message) = CommandRunner.Execute(type, delay, force);
-                QueueAck(new CommandAck(id, ok, message));
-                CommandExecuted?.Invoke(new CommandOutcome(id, type, ok, message));
+                var result = CommandRunner.Execute(type, delay, force);
+                QueueAck(new CommandAck(id, result.Ok, result.Message, result.RdpEnabled));
+                CommandExecuted?.Invoke(new CommandOutcome(id, type, result.Ok, result.Message));
             }
         }
     }
@@ -382,7 +382,11 @@ public sealed class HeartbeatService : IDisposable
     private sealed record CommandAck(
         [property: JsonPropertyName("id")] long Id,
         [property: JsonPropertyName("ok")] bool Ok,
-        [property: JsonPropertyName("message")] string Message);
+        [property: JsonPropertyName("message")] string Message,
+        // 只有 RDP 类指令才带：null 时序列化时整个键都不出现（旧服务端不会因未知字段 400）。
+        [property: JsonPropertyName("rdp_enabled")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        bool? RdpEnabled);
 
     private static int ReadInt(string body, string name, int fallback)
     {

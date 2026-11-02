@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"wol/internal/auth"
 	"wol/internal/config"
+	"wol/internal/guac"
 	"wol/internal/httpapi"
 	"wol/internal/probe"
 	"wol/internal/store"
@@ -68,9 +70,24 @@ func run() error {
 		return err
 	}
 
+	api := httpapi.New(db, db, waker, runner, db, db, authn, logger, "web")
+
+	// M2 远程桌面：两项配置都为空表示不启用，接口会返回明确的 503 而不是 500。
+	if cfg.GuacURL != "" {
+		guacCfg, err := guac.ParseConfig(cfg.GuacURL, cfg.GuacSecret, 0)
+		if err != nil {
+			return fmt.Errorf("远程桌面配置有误: %w", err)
+		}
+		api.EnableRDP(guacCfg, cfg.RDPPort)
+		// 只记地址与目标端口，密钥不进日志。
+		logger.Info("远程桌面已启用", "guac_url", guacCfg.BaseURL, "rdp_port", cfg.RDPPort)
+	} else {
+		logger.Info("远程桌面未启用（未设置 WOL_GUAC_URL / WOL_GUAC_SECRET）")
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           httpapi.New(db, db, waker, runner, db, db, authn, logger, "web").Routes(),
+		Handler:           api.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

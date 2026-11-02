@@ -11,10 +11,19 @@ import (
 )
 
 // 指令类型。
+// shutdown/restart 会真的关机重启；enable_rdp/disable_rdp 只改系统设置，
+// 不涉及倒计时，delay_seconds 对它们没有意义（写入 0）。
 const (
-	CommandShutdown = "shutdown"
-	CommandRestart  = "restart"
+	CommandShutdown   = "shutdown"
+	CommandRestart    = "restart"
+	CommandEnableRDP  = "enable_rdp"
+	CommandDisableRDP = "disable_rdp"
 )
+
+// NeedsDelay 报告该指令类型是否使用 delay_seconds。
+func NeedsDelay(commandType string) bool {
+	return commandType == CommandShutdown || commandType == CommandRestart
+}
 
 // 指令状态：pending → delivered → done / failed；未取走超时则 expired。
 const (
@@ -71,7 +80,7 @@ func (d *DB) CreateCommand(ctx context.Context, cmd Command) (Command, error) {
 		return Command{}, ErrCommandPending
 	}
 
-	if cmd.DelaySeconds <= 0 {
+	if cmd.DelaySeconds <= 0 && NeedsDelay(cmd.Type) {
 		cmd.DelaySeconds = 60
 	}
 	cmd.Status = CommandStatusPending
@@ -142,7 +151,9 @@ func (d *DB) TakePendingCommands(ctx context.Context, deviceID int64, now time.T
 
 // AckCommand 记录客户端回执。只接受 delivered 状态的指令，
 // 重复回执或伪造 ID 都按"不存在"处理。
-func (d *DB) AckCommand(ctx context.Context, deviceID, commandID int64, ok bool, message string) error {
+// 回执成功后返回这条指令的最新快照：调用方需要类型来决定是否顺带更新设备状态
+// （enable_rdp/disable_rdp 的结果直接写进 device.rdp_enabled）。
+func (d *DB) AckCommand(ctx context.Context, deviceID, commandID int64, ok bool, message string) (Command, error) {
 	status := CommandStatusFailed
 	if ok {
 		status = CommandStatusDone
@@ -154,12 +165,25 @@ func (d *DB) AckCommand(ctx context.Context, deviceID, commandID int64, ok bool,
 		status, truncateMessage(message), formatTimeUTC(time.Now()),
 		commandID, deviceID, CommandStatusDelivered)
 	if err != nil {
-		return fmt.Errorf("写入指令回执失败: %w", err)
+		return Command{}, fmt.Errorf("写入指令回执失败: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrCommandNotFound
+		return Command{}, ErrCommandNotFound
 	}
-	return nil
+	return d.getCommand(ctx, commandID)
+}
+
+// getCommand 按 id 读取单条指令，供回执后回读使用。
+func (d *DB) getCommand(ctx context.Context, id int64) (Command, error) {
+	row := d.sql.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM device_command WHERE id = ?`, id)
+	cmd, err := scanCommand(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Command{}, ErrCommandNotFound
+	}
+	if err != nil {
+		return Command{}, err
+	}
+	return cmd, nil
 }
 
 // ListCommands 返回某设备最近的指令，按 id 倒序。
@@ -244,7 +268,7 @@ func (d *DB) expireStale(ctx context.Context, now time.Time) error {
 	return err
 }
 
-func scanCommand(rows *sql.Rows) (Command, error) {
+func scanCommand(rows scanner) (Command, error) {
 	var (
 		cmd                          Command
 		force                        int

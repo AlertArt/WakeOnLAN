@@ -34,10 +34,14 @@ type heartbeatRequest struct {
 }
 
 // heartbeatAck 是一条指令的执行结果。
+// rdp_enabled 是 M2 追加的可选字段：客户端执行完 enable_rdp/disable_rdp 后，
+// 把「改完之后 RDP 到底是不是可用的」一并报上来，服务端据此更新设备状态。
+// 老客户端不带这个键，指令类型也不是 RDP 时服务端不会碰它。
 type heartbeatAck struct {
-	ID      int64  `json:"id"`
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
+	ID         int64  `json:"id"`
+	OK         bool   `json:"ok"`
+	Message    string `json:"message"`
+	RDPEnabled *bool  `json:"rdp_enabled,omitempty"`
 }
 
 // heartbeatResponse 是心跳回执。interval_seconds 让客户端不必自己写死间隔；
@@ -150,16 +154,37 @@ func (s *Server) applyAcks(ctx context.Context, deviceID int64, acks []heartbeat
 		if ack.ID <= 0 {
 			continue
 		}
-		err := s.commands.AckCommand(ctx, deviceID, ack.ID, ack.OK, ack.Message)
+		cmd, err := s.commands.AckCommand(ctx, deviceID, ack.ID, ack.OK, ack.Message)
 		switch {
 		case err == nil:
-			s.logger.Info("指令执行回执", "device_id", deviceID, "command_id", ack.ID, "ok", ack.OK)
+			s.logger.Info("指令执行回执", "device_id", deviceID, "command_id", ack.ID,
+				"command", cmd.Type, "ok", ack.OK)
+			s.applyRDPState(ctx, deviceID, cmd.Type, ack)
 		case errors.Is(err, store.ErrCommandNotFound):
 			s.logger.Warn("忽略未知指令回执", "device_id", deviceID, "command_id", ack.ID)
 		default:
 			s.logger.Error("写入指令回执失败", "device_id", deviceID, "command_id", ack.ID, "err", err)
 		}
 	}
+}
+
+// applyRDPState 用 RDP 类指令的回执更新 device.rdp_enabled。
+//
+// 只认"客户端明确带上了 rdp_enabled 且执行成功"的回执：
+// 失败时可能是 reg 写不进去，此时保持原状态比猜测更安全；
+// 非 RDP 指令的回执即便带了该字段也一律忽略，避免被旧数据或伪造包改状态。
+func (s *Server) applyRDPState(ctx context.Context, deviceID int64, commandType string, ack heartbeatAck) {
+	if commandType != store.CommandEnableRDP && commandType != store.CommandDisableRDP {
+		return
+	}
+	if !ack.OK || ack.RDPEnabled == nil {
+		return
+	}
+	if err := s.statuses.SetRDPEnabled(ctx, deviceID, *ack.RDPEnabled); err != nil {
+		s.logger.Error("更新 RDP 状态失败", "device_id", deviceID, "err", err)
+		return
+	}
+	s.logger.Info("RDP 状态已更新", "device_id", deviceID, "rdp_enabled", *ack.RDPEnabled)
 }
 
 // parseMetrics 把客户端发来的宽松 JSON 对象解析成结构化指标。

@@ -234,6 +234,10 @@ bash smoke.sh --host 192.168.1.10 --password '你的口令' \
 | `WOL_DATA_DIR` | `/data` | SQLite 所在目录 |
 | `WOL_TOKEN_TTL` | `168h` | 令牌有效期，Go duration 写法 |
 | `WOL_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `WOL_GUAC_URL` | 空 | Guacamole 访问前缀（如 `http://<NAS的IP>:8088/guacamole`），必须是浏览器能打开的地址；与 `WOL_GUAC_SECRET` 同时设置或同时留空，只配一半拒绝启动 |
+| `WOL_GUAC_SECRET` | 空 | 与 Guacamole 共享的 32 位十六进制密钥（`openssl rand -hex 16`） |
+| `WOL_GUAC_PORT` | `8088` | guacamole 容器的宿主端口（compose 专用） |
+| `WOL_RDP_PORT` | `3389` | 目标机 RDP 端口 |
 
 口令是唯一的一道门：host 网络直接占用宿主端口，没有反向代理兜底。用 `openssl rand -base64 24` 生成，不要用有意义的短词。
 
@@ -309,3 +313,59 @@ docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.0.0 .
 ```bash
 cd deploy && ./verify-e7.sh
 ```
+
+---
+
+## 9. 远程桌面（可选，F11 M2）
+
+网页点「远程桌面」→ 目标机自动打开 RDP → 浏览器新标签页进入完整 Windows 桌面（Guacamole 网关）。需要多起 guacd + guacamole 两个容器（约 500MB 内存），放在 compose 的 `rdp` profile 里，不启用则完全不启动。
+
+### 9.1 配置与启动
+
+```bash
+# 1) 生成 wold 与 Guacamole 的共享密钥（32 位十六进制）
+openssl rand -hex 16
+
+# 2) 写进 .env（三个变量，WOL_RDP_PORT 一般不用动）
+#    WOL_GUAC_SECRET=<上一步的值>
+#    WOL_GUAC_URL=http://<NAS的IP>:8088/guacamole   ← 必须是手机/外网也能打开的地址
+#    WOL_GUAC_PORT=8088
+#    WOL_RDP_PORT=3389
+
+# 3) 导入镜像（离线包带 --with-guac 时才有这两个 tar.gz；NAS 有外网可改用 docker pull）
+docker load -i guacamole-guacd-1.6.0-amd64.tar.gz
+docker load -i guacamole-guacamole-1.6.0-amd64.tar.gz
+
+# 4) 带 profile 启动
+docker compose -f docker-compose.nas.yml --profile rdp up -d
+```
+
+安全模型：
+
+- Guacamole **只启用 JSON 认证**：没有可登录的用户名/口令，唯一进门方式是 wold 签发的一次性票据；直接访问它的地址只会看到无法使用的登录页；
+- wold 不持有任何 Guacamole 管理员口令，也不引入数据库——两个系统只共享一个密钥；
+- 票据 60 秒有效、只能用一次，兑换时才生成 Guacamole 载荷，且载荷放在 URL `#` 之后的 fragment 里，不进服务端日志与访问日志；
+- guacd/guacamole 不需要公网映射（guacd 甚至没有宿主端口）；对外访问建议走 NAS 反代并套 HTTPS，再把 `WOL_GUAC_URL` 改成反代后的地址。
+
+### 9.2 使用与验收
+
+```bash
+# 冒烟：带 --rdp <设备ID>（目标机在线且 RDP 已启用时才全通过，否则该段自动跳过并说明原因）
+bash smoke.sh --host <NAS的IP> --password '<口令>' --rdp 3
+```
+
+1. 目标机上的客户端以**管理员身份**运行（普通权限写注册表会被拒绝，卡片会显示回执原因）；
+2. 网页对在线目标机点「启用远程桌面」→ 等 chip 变成「RDP 已启用」；
+3. 点「远程桌面」→ 新标签页进入 Windows 登录界面，输入 Windows 账号口令进桌面；
+4. 票据过期/用过再访问会看到"票据已失效"页，重新点一次即可。
+
+常见问题：
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 点「启用远程桌面」回执"需要以管理员身份运行客户端" | 客户端没有提权。用管理员运行，或按 `client/README.md` 用 SYSTEM 计划任务常驻 |
+| 回执"启用远程桌面失败：拒绝访问" | 同上，`reg.exe` 写 `HKLM` 需要管理员权限 |
+| chip 已启用但连不上 | 看回执 message 是否带"3389 尚未监听"：多半是 TermService 被组策略禁用 |
+| 票据页直接 503 | wold 没配 `WOL_GUAC_URL`/`WOL_GUAC_SECRET`，或只配了一半（只配一半进程会拒绝启动） |
+| Guacamole 打开报 Permission Denied | 两边密钥不一致：`.env` 里的 `WOL_GUAC_SECRET` 改过之后要 `--profile rdp up -d --force-recreate` 重建 |
+| 端口 8088 冲突 | 改 `.env` 的 `WOL_GUAC_PORT`，同时 `WOL_GUAC_URL` 里的端口也要跟着改 |

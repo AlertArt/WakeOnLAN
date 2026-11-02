@@ -21,16 +21,19 @@ import (
 type CommandStore interface {
 	CreateCommand(ctx context.Context, cmd store.Command) (store.Command, error)
 	TakePendingCommands(ctx context.Context, deviceID int64, now time.Time) ([]store.Command, error)
-	AckCommand(ctx context.Context, deviceID, commandID int64, ok bool, message string) error
+	AckCommand(ctx context.Context, deviceID, commandID int64, ok bool, message string) (store.Command, error)
 	ListCommands(ctx context.Context, deviceID int64, limit int) ([]store.Command, error)
 	ListAllCommands(ctx context.Context, limit int) ([]store.Command, error)
 	HasOpenCommand(ctx context.Context, deviceID int64) (bool, error)
 }
 
 // 允许的指令类型，与 store 包的常量一一对应。
+// shutdown/restart 带倒计时；enable_rdp/disable_rdp 只改系统设置，不需要倒计时。
 var commandTypes = map[string]bool{
-	store.CommandShutdown: true,
-	store.CommandRestart:  true,
+	store.CommandShutdown:   true,
+	store.CommandRestart:    true,
+	store.CommandEnableRDP:  true,
+	store.CommandDisableRDP: true,
 }
 
 const (
@@ -102,17 +105,25 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !commandTypes[req.Type] {
-		writeError(w, http.StatusBadRequest, "invalid_command", "指令类型只支持 shutdown 或 restart")
+		writeError(w, http.StatusBadRequest, "invalid_command",
+			"指令类型只支持 shutdown、restart、enable_rdp、disable_rdp")
 		return
 	}
 
-	delay := 60
-	if req.DelaySeconds != nil {
-		delay = *req.DelaySeconds
-	}
-	if delay < commandDelayMin || delay > commandDelayMax {
-		writeError(w, http.StatusBadRequest, "invalid_command", "延时必须在 10–600 秒之间")
-		return
+	// 只有关机/重启用倒计时。RDP 开关没有"几秒后执行"的语义，
+	// 传了也忽略并写 0，免得日志里出现一个没人使用的延时。
+	delay := 0
+	force := false
+	if store.NeedsDelay(req.Type) {
+		delay = 60
+		if req.DelaySeconds != nil {
+			delay = *req.DelaySeconds
+		}
+		if delay < commandDelayMin || delay > commandDelayMax {
+			writeError(w, http.StatusBadRequest, "invalid_command", "延时必须在 10–600 秒之间")
+			return
+		}
+		force = req.Force != nil && *req.Force
 	}
 
 	dv, err := s.devices.GetDevice(r.Context(), id)
@@ -144,7 +155,7 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 		DeviceID:     id,
 		Type:         req.Type,
 		DelaySeconds: delay,
-		Force:        req.Force != nil && *req.Force,
+		Force:        force,
 	})
 	switch {
 	case errors.Is(err, store.ErrCommandPending):

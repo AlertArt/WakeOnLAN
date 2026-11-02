@@ -1,10 +1,14 @@
 # 运行时编排：只拉取本地已有镜像，不含 build 段。
 # 用于无法访问 GitHub、只能导入镜像的 NAS（如极空间）。
 # 打包方法见 deploy/README.md 第二节；镜像由 deploy/package-offline.sh 生成。
+#
+# 远程桌面（F11-M2）需要 guacd + guacamole 两个容器，它们放在 `rdp` profile 里：
+#   docker compose -f docker-compose.nas.yml --profile rdp up -d
+# 不用远程桌面的人照旧 `up -d`，不会多起两个容器，也不会因为缺 GUAC 变量而启动失败。
 
 services:
   wold:
-    image: wol:2.0.0-beta.1
+    image: wol:2.0.0-beta.2
     container_name: wold
 
     # 必须 host：WOL 是 UDP 广播，桥接网络下包只落在 docker0，设备不会开机，
@@ -21,6 +25,14 @@ services:
       WOL_TOKEN_TTL: ${WOL_TOKEN_TTL:-168h}
       WOL_LOG_LEVEL: ${WOL_LOG_LEVEL:-info}
 
+      # 远程桌面。两个都为空 = 不启用（接口返回明确错误，其余功能不受影响）。
+      # WOL_GUAC_URL 必须是**浏览器**能访问到的地址：手机在外网点「远程桌面」时，
+      # 浏览器会直接跳到这里。填 http://<NAS的IP>:8088/guacamole 或反代后的 HTTPS 地址，
+      # 千万别填 127.0.0.1——除非浏览器就跑在 NAS 自己身上。
+      WOL_GUAC_URL: ${WOL_GUAC_URL:-}
+      WOL_GUAC_SECRET: ${WOL_GUAC_SECRET:-}
+      WOL_RDP_PORT: ${WOL_RDP_PORT:-3389}
+
     # SQLite 落在命名卷上，不写容器层。
     # 挂宿主目录（-v /vol1/docker/wol:/data）也可以：属主由容器启动时自动修正。
     volumes:
@@ -32,6 +44,55 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  # guacd 是协议代理：把 Guacamole 的指令翻译成 RDP/SSH 等协议。
+  # 它不需要任何宿主端口，只与 guacamole 在内部网络里通信。
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: guacd
+    profiles: ["rdp"]
+    restart: unless-stopped
+    networks: [guac]
+    # 屏幕数据要走共享内存，256MB 足够一两路 1080p；给太小会表现为画面撕裂或断开。
+    shm_size: 256m
+
+  # guacamole 是网页客户端：浏览器打开的就是它的页面。
+  guacamole:
+    image: guacamole/guacamole:1.6.0
+    container_name: guacamole
+    profiles: ["rdp"]
+    restart: unless-stopped
+    depends_on: [guacd]
+    networks: [guac]
+
+    environment:
+      GUACD_HOSTNAME: guacd
+      # 只启用 JSON 认证：没有用户名/密码登录入口，唯一的进门方式是 wold 签发的票据。
+      JSON_ENABLED: "true"
+      # 与 wold 共享的密钥。只需在这里配一次：
+      # 800-json-secret.sh 会在启动时把它写进 Guacamole 的配置目录。
+      JSON_SECRET_KEY: ${WOL_GUAC_SECRET:-}
+
+    ports:
+      # 默认只绑宿主 8088。对外访问请走 NAS 的反向代理并套 HTTPS，
+      # 然后把 WOL_GUAC_URL 改成那个地址。
+      - "${WOL_GUAC_PORT:-8088}:8080"
+
+    volumes:
+      # 注意挂的是**单个文件**：整个目录挂上去会把镜像自带的入口脚本全盖掉。
+      - ./guac-init/800-json-secret.sh:/opt/guacamole/entrypoint.d/800-json-secret.sh:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/guacamole/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+networks:
+  # 只给 guacd 与 guacamole 用；wold 是 host 网络，走宿主回环访问 guacamole。
+  guac:
+    driver: bridge
 
 volumes:
   wol-data:

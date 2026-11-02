@@ -45,7 +45,11 @@ POST /api/devices/{id}/commands          （需管理令牌）
 { "type": "shutdown", "delay_seconds": 60, "force": false }
 ```
 
+`type` 枚举：`shutdown` / `restart` / `enable_rdp` / `disable_rdp`（后两个是 F11-M2 追加）。
+
 `delay_seconds` 省略时为 60，`force` 省略时为 false。
+**只有 `shutdown` / `restart` 使用这两个字段**：`enable_rdp` / `disable_rdp` 没有"几秒后执行"的语义，
+传了也会被忽略并落库为 `delay_seconds=0`、`force=false`。
 
 成功 `201`：
 
@@ -58,7 +62,7 @@ POST /api/devices/{id}/commands          （需管理令牌）
 
 | 状态 | error | 触发条件 |
 | --- | --- | --- |
-| 400 | `invalid_json` / `invalid_command` | 字段非法、`type` 不在枚举内、`delay_seconds` 越界 |
+| 400 | `invalid_json` / `invalid_command` | 字段非法、`type` 不在枚举内、`delay_seconds` 越界（仅关机/重启校验） |
 | 400 | `not_heartbeat` | 设备不是心跳校验方式（无下发通道） |
 | 404 | `not_found` | 设备不存在 |
 | 409 | `device_offline` | 最近心跳超过阈值，设备当前不在线 |
@@ -93,6 +97,18 @@ GET /api/commands?limit=20                 （需管理令牌）  → 200 [{...,
   "acks": [ { "id": 12, "ok": true, "message": "已执行 shutdown /s /t 60" } ] }
 ```
 
+RDP 类指令（F11-M2 追加）的回执可以多带一个 `rdp_enabled`：
+
+```json
+{ "id": 13, "ok": true, "message": "RDP 已启用 · 防火墙已放行", "rdp_enabled": true }
+```
+
+`rdp_enabled` 是**设备 RDP 状态的唯一来源**，服务端不猜：
+
+- 只有被执行指令的类型是 `enable_rdp` / `disable_rdp`、且 `ok=true` 时才采用；
+- 其它类型（含关机）的回执即便带了这个字段也一律忽略；
+- 执行失败时保持原状态——写注册表失败不代表 RDP 被关掉了，宁可不改。
+
 兼容性：
 
 - 旧客户端不读 `features` / `commands`，字段被忽略，行为不变；
@@ -106,10 +122,18 @@ GET /api/commands?limit=20                 （需管理令牌）  → 200 [{...,
 2. `restart` → `shutdown.exe /r /t <delay> [/f] /c "远程重启：WakeOnLAN 管理端"`
 3. 延时下限 10 秒，给用户 `shutdown /a` 撤销的机会；托盘菜单提供"取消关机（撤销）"；
 4. 执行结果（含 Windows 返回码）写入日志，并在下一次心跳回执里上报；
-5. `WOL_SHUTDOWN_DRYRUN=1` 或 `--dry-run` 时只记录不执行，用于验收与演示。
+5. `WOL_SHUTDOWN_DRYRUN=1` 或 `--dry-run` 时只记录不执行，用于验收与演示；
+6. `enable_rdp` 顺序执行四步并逐条写日志：写 `fDenyTSConnections=0` → 按**规则名**
+   `RemoteDesktop-UserMode-In-TCP/UDP` 启用防火墙（不能用组名，中文系统叫「远程桌面」）→
+   设 `UserAuthentication=1`（NLA）→ 确保 `TermService` 运行；
+7. `disable_rdp` 反向：`fDenyTSConnections=1` + 关闭上述防火墙规则，不动 NLA；
+8. 两者最后都**回读注册表**给结论：`fDenyTSConnections=0` 才算启用成功，
+   并顺带检查 3389 是否 LISTENING（未监听会在回执里说明，常见原因是组策略限制）；
+9. 非管理员运行时 `reg add` 会被拒绝，回执为 `ok=false` 且 message 明确写"需要以管理员身份运行客户端"。
 
 ## 七、安全
 
 - 下发接口需管理令牌；指令表记录时间与结果，可在界面追溯；
-- 客户端只执行服务端下发的 `shutdown` / `restart`，不接受任意命令字符串（无 shell 注入面）；
+- 客户端只执行服务端下发的四种固定指令，参数全部写死在客户端里，
+  服务端只能选"执行哪一种"、不能改参数（无 shell 注入面）；
 - 心跳密钥即设备凭据：拿到密钥的人能让该设备关机，因此密钥按口令对待，不入日志、不入截图。
