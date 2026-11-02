@@ -2,7 +2,7 @@
 
 单用户、自用的局域网唤醒服务：录入设备 → 点一下 → 发送 WOL 魔术包 → 用 Ping / TCP 端口探测给出"已上线 / 超时未响应"的明确结论。移动端为响应式 Web + PWA，部署为单容器 + 单文件 SQLite。
 
-> 当前处于 **E7 环节：Docker 镜像与编排**（已放行）。7-1~7-7 在 Docker Desktop 4.95 / Engine 29.8 上实测通过，7-8 的广播包已在宿主网卡抓到（102 字节标准魔术包）；"目标机真的开机"留给 E8 端到端演练。
+> 当前版本 **v2.0.0-beta.1**：在唤醒与在线校验之上，新增**远程关机/重启**（指令随心跳下发，目标机零入站端口）与**设备状态指标**（CPU / 内存 / 磁盘 / 网速 / IP / 开机时长）。离线包与客户端见 [Releases](https://github.com/AlertArt/WakeOnLAN/releases)；远程桌面网关（Guacamole）与改网络后的自动回滚仍在计划中，见 `docs/F11-remote-access-plan.md`。
 
 ## 快速开始（本地）
 
@@ -110,7 +110,7 @@ docker pull docker.1ms.run/library/debian:bookworm-slim
 docker tag  docker.1ms.run/library/debian:bookworm-slim debian:bookworm-slim
 
 # 2) apt 装不上 ping：切换 Debian 源（不填则用官方源）
-docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:1.1.0 .
+docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:2.0.0-beta.1 .
 ```
 
 实测结论见 `docs/E7-acceptance.md`（7-1~7-7 全部通过，7-8 广播包已在宿主网卡抓到）。
