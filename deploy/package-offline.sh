@@ -240,7 +240,7 @@ cat > "$OUT/安装说明.txt" <<EOF
 - Guacamole 没有用户名/密码登录入口（只启用 JSON 认证），
   直接访问它的地址只会看到无法使用的登录页；
 - 对外访问建议走 NAS 反代并套 HTTPS，再把 WOL_GUAC_URL 改成反代后的地址；
-- 不启用远程桌面时，照旧 `docker compose -f docker-compose.nas.yml up -d` 即可，
+- 不启用远程桌面时，照旧 docker compose -f docker-compose.nas.yml up -d 即可，
   两个容器不会启动。
 
 八、v2.0.0 新增：远程关机/重启 与 状态指标（需 GUI 客户端）
