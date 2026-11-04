@@ -371,3 +371,4 @@ bash smoke.sh --host <NAS的IP> --password '<口令>' --rdp 3
 | 端口 8088 冲突 | 改 `.env` 的 `WOL_GUAC_PORT`，同时 `WOL_GUAC_URL` 里的端口也要跟着改 |
 | 点「远程桌面」提示"服务不可用"，`curl http://<NAS>:8088/guacamole/` 连不上 | 先看 `docker ps` 有没有 guacamole。常见原因是把 `ports: "8088:8080"` 的**右边**也改成了自己的端口（如 9090）：右边是容器内 Tomcat 端口，写死在镜像里，只能改左边。容器内 8080 不会与宿主的 8080 冲突，两者是隔离的网络命名空间 |
 | guacamole 容器 `Up (unhealthy)` 但页面能开 | 探活依赖容器内 `curl http://127.0.0.1:8080/guacamole/`，容器内端口被改过就会一直 unhealthy；恢复成 8080 即可 |
+| 跳到 Guacamole 后页面空白或「全部连接」下没有连接 | 连接名含非 ASCII 字符（如中文设备名）会让 Guacamole 前端 `btoa` 抛异常、整页崩掉（浏览器控制台可见 `InvalidCharacterError`）。beta.3 起连接名固定为 `wol-<设备ID>`（纯 ASCII），升级服务端即可；不要手工把连接名改回设备名 |

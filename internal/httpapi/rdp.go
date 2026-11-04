@@ -93,9 +93,13 @@ func (s *Server) handleRDPSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	expiresAt := time.Now().Add(rdpSessionTTL)
+	// 连接名必须只用 ASCII：Guacamole 前端在主页/连接页会用 btoa 编码连接标识，
+	// 名字里出现非 Latin1 字符（如中文设备名）会让整个前端页面抛异常崩掉，
+	// 表现为「全部连接」下什么都不显示。用设备 ID 做稳定标识，不碰设备名。
+	connName := fmt.Sprintf("wol-%d", dv.ID)
 	data, err := s.guacCfg.Encode(guac.Session{
-		Username:       fmt.Sprintf("wol-%d", dv.ID),
-		ConnectionName: dv.Name,
+		Username:       connName,
+		ConnectionName: connName,
 		Host:           m.IP,
 		Port:           s.rdpPort,
 		ExpiresAt:      expiresAt,
@@ -106,7 +110,7 @@ func (s *Server) handleRDPSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticket, expires, err := s.rdpTickets.Issue(data, dv.Name)
+	ticket, expires, err := s.rdpTickets.Issue(data, connName)
 	if err != nil {
 		s.logger.Error("签发票据失败", "id", id, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "生成远程桌面会话失败")

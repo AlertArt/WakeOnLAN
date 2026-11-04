@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -188,7 +189,8 @@ func TestRDPTicketRedirects(t *testing.T) {
 		t.Fatalf("status = %d, want 302，body = %s", rec.Code, rec.Body.String())
 	}
 	loc := rec.Header().Get("Location")
-	if !strings.HasPrefix(loc, "https://nas.example.com/guacamole/#/?data=") {
+	// 必须是直连路由：auth-json 认证完不会自动连线，落点带 client 路径才会立即发起会话。
+	if !strings.HasPrefix(loc, "https://nas.example.com/guacamole/#/client/") {
 		t.Fatalf("Location = %q", loc)
 	}
 	// 载荷必须已经 URL 转义：base64 的 + / = 在查询串里有特殊含义。
@@ -198,6 +200,78 @@ func TestRDPTicketRedirects(t *testing.T) {
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("Cache-Control = %q，应禁止缓存", cc)
 	}
+}
+
+// 连接名必须是纯 ASCII：Guacamole 前端用 btoa 编码连接标识，非 Latin1 字符
+// （如中文设备名）会让整页抛 InvalidCharacterError，主页「全部连接」渲染不出来。
+func TestRDPPayloadConnectionNameASCII(t *testing.T) {
+	h, _ := newRDPTestServer(t)
+
+	var resp rdpSessionResponse
+	rec := postSession(h, "/api/devices/1/rdp-session")
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	rec = getTicket(h, resp.URL)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
+	}
+
+	// Location 形如 …/#/client/<名字>?data=<载荷>；数据在 fragment 里，手动拆出来。
+	loc := rec.Header().Get("Location")
+	i := strings.Index(loc, "?data=")
+	if i < 0 {
+		t.Fatalf("Location 缺少 data 参数：%q", loc)
+	}
+	data, err := url.QueryUnescape(loc[i+len("?data="):])
+	if err != nil {
+		t.Fatalf("载荷转义非法: %v", err)
+	}
+
+	cfg, err := guac.ParseConfig("https://nas.example.com/guacamole", testGuacKey, 0)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	plain, err := cfg.Decode(data)
+	if err != nil {
+		t.Fatalf("载荷解不开: %v", err)
+	}
+
+	var payload struct {
+		Username    string `json:"username"`
+		Connections map[string]struct {
+			Protocol string `json:"protocol"`
+		} `json:"connections"`
+	}
+	if err := json.Unmarshal(plain, &payload); err != nil {
+		t.Fatalf("载荷不是合法 JSON: %v，明文 %q", err, plain)
+	}
+	if payload.Username != "wol-1" {
+		t.Errorf("username = %q，应为 wol-1（设备 1 的稳定标识）", payload.Username)
+	}
+	for name, conn := range payload.Connections {
+		if !isASCII(name) {
+			t.Errorf("连接名 %q 含非 ASCII 字符，会让 Guacamole 前端 btoa 崩溃", name)
+		}
+		if name != "wol-1" {
+			t.Errorf("连接名 = %q，应为 wol-1（不取设备名「书房主机」）", name)
+		}
+		if conn.Protocol != "rdp" {
+			t.Errorf("protocol = %q，应为 rdp", conn.Protocol)
+		}
+	}
+	if len(payload.Connections) != 1 {
+		t.Errorf("连接数 = %d，应为 1", len(payload.Connections))
+	}
+}
+
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
 }
 
 // 同一张票据只能用一次：第二次 410。
@@ -247,7 +321,7 @@ func TestRDPTicketWithoutToken(t *testing.T) {
 	}
 	srv.EnableRDP(cfg, 3389)
 
-	ticket, _, err := srv.rdpTickets.Issue("payload")
+	ticket, _, err := srv.rdpTickets.Issue("payload", "测试机")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
