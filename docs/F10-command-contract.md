@@ -125,7 +125,7 @@ RDP 类指令（F11-M2 追加）的回执可以多带一个 `rdp_enabled`：
 5. `WOL_SHUTDOWN_DRYRUN=1` 或 `--dry-run` 时只记录不执行，用于验收与演示；
 6. `enable_rdp` 顺序执行四步并逐条写日志：写 `fDenyTSConnections=0` → 按**规则名**
    `RemoteDesktop-UserMode-In-TCP/UDP` 启用防火墙（不能用组名，中文系统叫「远程桌面」）→
-   设 `UserAuthentication=1`（NLA）→ 确保 `TermService` 运行；
+   设 `UserAuthentication=0`（关闭 NLA：网关不持凭据，NLA 会在会话建立前拦截，guacd 凭据提示框 15 秒即超时）→ 确保 `TermService` 运行；
 7. `disable_rdp` 反向：`fDenyTSConnections=1` + 关闭上述防火墙规则，不动 NLA；
 8. 两者最后都**回读注册表**给结论：`fDenyTSConnections=0` 才算启用成功，
    并顺带检查 3389 是否 LISTENING（未监听会在回执里说明，常见原因是组策略限制）；

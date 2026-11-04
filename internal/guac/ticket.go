@@ -118,14 +118,21 @@ func (c Config) Encode(s Session) (string, error) {
 		port = 3389
 	}
 
-	// 不传 username/password：让 Guacamole 直接呈现 Windows 的登录界面，
-	// 由使用者自己输凭据。服务端不保存、也不转发任何 Windows 账号口令。
+	// 不传 username/password：凭据由使用者在会话内的 Windows 登录界面输入。
+	// 服务端不保存、也不转发任何 Windows 账号口令。
+	//
+	// security 用 tls 而不是 nla：NLA 要求在连接建立前给出凭据，guacd 会对
+	// 没有凭据的连接弹「用户名/密码」提示框，而 guacd 等待用户应答的超时
+	// 写死为 15 秒（GUACAMOLE-2233，1.6.0 尚不可配置）——人工输入口令几乎
+	// 必然超时，前端表现为「远程桌面服务器拒绝了本连接」。目标机配合关闭
+	// NLA（enable_rdp 设 UserAuthentication=0）后，TLS 模式在会话内呈现
+	// 真正的 Windows 登录界面，没有时间限制。
 	conn := rdpConn{
 		Protocol: "rdp",
 		Parameters: map[string]string{
 			"hostname":         s.Host,
 			"port":             strconv.Itoa(port),
-			"security":         "nla",
+			"security":         "tls",
 			"ignore-cert":      "true",
 			"resize-method":    "display-update",
 			"disable-audio":    "true",

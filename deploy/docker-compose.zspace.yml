@@ -17,7 +17,7 @@
 
 services:
   wold:
-    image: wol:2.0.0-beta.3
+    image: wol:2.0.0-beta.4
     container_name: wold
 
     # host：WOL 是 UDP 广播，桥接网络下唤醒包发不出去（接口仍返回 202，很难发现）。

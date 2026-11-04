@@ -70,8 +70,8 @@ func TestEncodeRoundTrip(t *testing.T) {
 	if conn.Parameters["hostname"] != "192.168.1.10" || conn.Parameters["port"] != "3389" {
 		t.Errorf("主机参数不对：%v", conn.Parameters)
 	}
-	if conn.Parameters["security"] != "nla" {
-		t.Errorf("security = %q，期望 nla", conn.Parameters["security"])
+	if conn.Parameters["security"] != "tls" {
+		t.Errorf("security = %q，期望 tls", conn.Parameters["security"])
 	}
 	// 明确断言不透传任何凭据：Windows 账号由使用者在 Guacamole 的登录界面输入。
 	if _, ok := conn.Parameters["username"]; ok {

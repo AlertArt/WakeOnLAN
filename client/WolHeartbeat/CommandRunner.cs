@@ -126,14 +126,17 @@ internal static class CommandRunner
         // 但要把失败写进回执，后面再用端口监听做最终结论。
         steps.Append(ok ? "；防火墙已放行" : $"；防火墙操作未成功（{Shorten(msg)}）");
 
-        // 3) NLA：只在启用时设置，关闭时保留原值不动（避免影响其它远程管理手段）。
+        // 3) NLA：启用时关闭（UserAuthentication=0）。浏览器网关不带 Windows 凭据，
+        //    NLA 要求在会话建立前完成认证，guacd 的凭据提示框 15 秒就超时，
+        //    人工输入口令根本来不及；关掉 NLA 后凭据在会话内的 Windows 登录界面
+        //    输入（TLS 加密传输，安全性仍由登录口令把守）。关闭时保留原值不动。
         if (enable)
         {
             (ok, msg) = RunTool("reg.exe",
                 "add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp\" " +
-                "/v UserAuthentication /t REG_DWORD /d 1 /f",
-                "启用 NLA");
-            steps.Append(ok ? "；NLA 已开启" : $"；NLA 设置失败（{Shorten(msg)}）");
+                "/v UserAuthentication /t REG_DWORD /d 0 /f",
+                "关闭 NLA（凭据改在登录界面输入）");
+            steps.Append(ok ? "；NLA 已关闭" : $"；NLA 设置失败（{Shorten(msg)}）");
         }
 
         // 4) 确保 TermService 在跑

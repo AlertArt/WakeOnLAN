@@ -78,7 +78,7 @@
 ### 服务端（wold）
 
 1. F10 指令通道新增指令类型（`docs/F10-command-contract.md` 同步更新）：
-   - `enable_rdp`：`reg add ... fDenyTSConnections=0` + 防火墙放行远程桌面组 + 确保 NLA（`UserAuthentication=1`）；
+   - `enable_rdp`：`reg add ... fDenyTSConnections=0` + 防火墙放行远程桌面组 + 关闭 NLA（`UserAuthentication=0`，凭据改在会话内的 Windows 登录界面输入）；
    - `disable_rdp`：反向。
 2. `enable_rdp` 成功回执后，服务端把该设备的 `rdp_enabled=1`（由客户端回执携带，服务端不猜测）。
 3. Guacamole 集成（NAS 侧新增容器，wold 不内嵌流媒体）——**按 auth-json 方案落地**：
@@ -91,7 +91,7 @@
 
 ### 客户端
 
-1. `CommandRunner` 增加 `enable_rdp` / `disable_rdp` 分支：四步走——注册表总开关 → 防火墙**按规则名**放行（`RemoteDesktop-UserMode-In-TCP/UDP`，与系统语言无关；不用组名，中文系统组名是「远程桌面」）→ NLA（`UserAuthentication=1`）→ 确保 TermService 运行；逐条执行、逐条记录日志；
+1. `CommandRunner` 增加 `enable_rdp` / `disable_rdp` 分支：四步走——注册表总开关 → 防火墙**按规则名**放行（`RemoteDesktop-UserMode-In-TCP/UDP`，与系统语言无关；不用组名，中文系统组名是「远程桌面」）→ 关闭 NLA（`UserAuthentication=0`）→ 确保 TermService 运行；逐条执行、逐条记录日志；
 2. 执行后回执 message 带结果摘要（如 `RDP 已启用` / `防火墙规则失败：...`）；
 3. 非提权运行时若 reg 写入失败，回执 `ok=false, message="需要 SYSTEM/管理员方式运行客户端"`。
 
