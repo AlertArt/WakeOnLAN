@@ -120,12 +120,16 @@ func TestTamperedPayloadRejected(t *testing.T) {
 }
 
 // URL 里的 base64 必须转义：+ 会被当成空格，= 会截断查询串。
+// 路由必须指向 /client/<连接名>：auth-json 只做认证不自动连线，落点必须是直连路由。
 func TestClientURL(t *testing.T) {
 	cfg := testConfig(t)
-	got := cfg.ClientURL("ab+c/d==")
+	got := cfg.ClientURL("ab+c/d==", "测试机")
 
-	if !strings.HasPrefix(got, "https://nas.example.com/guacamole/#/?data=") {
-		t.Fatalf("前缀不对：%s", got)
+	if !strings.HasPrefix(got, "https://nas.example.com/guacamole/#/client/") {
+		t.Fatalf("前缀不对（必须是直连路由）：%s", got)
+	}
+	if !strings.Contains(got, url.PathEscape("测试机")) {
+		t.Errorf("连接名未出现在路径里（需转义）：%s", got)
 	}
 	if strings.Contains(got, "ab+c/d==") {
 		t.Errorf("base64 未转义：%s", got)

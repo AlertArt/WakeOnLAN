@@ -9,7 +9,7 @@ import (
 func TestTicketSingleUse(t *testing.T) {
 	store := NewTicketStore(time.Minute)
 
-	id, expires, err := store.Issue("payload")
+	id, expires, err := store.Issue("payload", "conn")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestTicketExpires(t *testing.T) {
 	now := time.Now()
 	store.now = func() time.Time { return now }
 
-	id, _, err := store.Issue("payload")
+	id, _, err := store.Issue("payload", "conn")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestTicketSweepOnIssue(t *testing.T) {
 	store.now = func() time.Time { return now }
 
 	for i := 0; i < 3; i++ {
-		if _, _, err := store.Issue("payload"); err != nil {
+		if _, _, err := store.Issue("payload", "conn"); err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
 	}
@@ -76,7 +76,7 @@ func TestTicketSweepOnIssue(t *testing.T) {
 	}
 
 	store.now = func() time.Time { return now.Add(30 * time.Millisecond) }
-	if _, _, err := store.Issue("payload"); err != nil {
+	if _, _, err := store.Issue("payload", "conn"); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 	if store.Len() != 1 {

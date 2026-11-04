@@ -164,10 +164,14 @@ func (c Config) Encode(s Session) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
-// ClientURL 把 data 拼成 Guacamole 的入口地址。
-// 参数放在 # 之后的查询串里：Guacamole 前端从 location.hash 里取，不经过服务端日志。
-func (c Config) ClientURL(data string) string {
-	return c.BaseURL + "/#/?data=" + url.QueryEscape(data)
+// ClientURL 把 data 拼成 Guacamole 的**直连**地址。
+//
+// 路由用 #/client/<连接名> 而不是首页 #/：实测（1.6.0）auth-json 只做认证 +
+// 注入连接，落点是主页，还得手动点连接；带 client 路由时认证完立即发起连接。
+// data 放在 # 之后的查询串里：Guacamole 前端从 location 里取，不经过服务端日志。
+// 连接名做路径转义，中文名与特殊字符都安全。
+func (c Config) ClientURL(data, connName string) string {
+	return c.BaseURL + "/#/client/" + url.PathEscape(connName) + "?data=" + url.QueryEscape(data)
 }
 
 // pkcs7Pad 按块大小补齐。PKCS#5 与 PKCS#7 在 16 字节分组下是同一件事。

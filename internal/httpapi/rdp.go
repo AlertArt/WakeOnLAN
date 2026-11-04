@@ -106,7 +106,7 @@ func (s *Server) handleRDPSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticket, expires, err := s.rdpTickets.Issue(data)
+	ticket, expires, err := s.rdpTickets.Issue(data, dv.Name)
 	if err != nil {
 		s.logger.Error("签发票据失败", "id", id, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "生成远程桌面会话失败")
@@ -137,7 +137,7 @@ func (s *Server) handleRDPTicket(w http.ResponseWriter, r *http.Request) {
 	// 跳转目标带一次性载荷，任何缓存都可能让第二个请求复用它。
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	http.Redirect(w, r, s.guacCfg.ClientURL(t.Data), http.StatusFound)
+	http.Redirect(w, r, s.guacCfg.ClientURL(t.Data, t.ConnName), http.StatusFound)
 }
 
 // expiredTicketPage 是票据失效时的说明页。

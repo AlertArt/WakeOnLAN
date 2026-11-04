@@ -15,7 +15,9 @@ import (
 // Ticket 是一张已签发的票据。
 type Ticket struct {
 	// Data 是 guacamole-auth-json 需要的 base64 载荷（已含过期时间）。
-	Data      string
+	Data string
+	// ConnName 是载荷里唯一的连接名，兑换时用于拼直连路由。
+	ConnName  string
 	ExpiresAt time.Time
 }
 
@@ -40,8 +42,9 @@ func NewTicketStore(ttl time.Duration) *TicketStore {
 	}
 }
 
-// Issue 签发一张票据，返回票据 ID 与过期时间。
-func (s *TicketStore) Issue(data string) (string, time.Time, error) {
+// Issue 签发一张票据，返回票据 ID 与过期时间。connName 随票据一起保存，
+// 兑换时拼直连路由用——不放进 data（那是给 Guacamole 的签名载荷，不能多字段）。
+func (s *TicketStore) Issue(data, connName string) (string, time.Time, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", time.Time{}, err
@@ -52,7 +55,7 @@ func (s *TicketStore) Issue(data string) (string, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked()
-	s.items[id] = Ticket{Data: data, ExpiresAt: expires}
+	s.items[id] = Ticket{Data: data, ConnName: connName, ExpiresAt: expires}
 	return id, expires, nil
 }
 
