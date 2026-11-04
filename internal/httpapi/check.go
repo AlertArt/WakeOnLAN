@@ -26,6 +26,8 @@ type StatusStore interface {
 	MarkOnline(ctx context.Context, deviceID int64) error
 	SaveMetrics(ctx context.Context, deviceID int64, m *store.Metrics, at time.Time) error
 	SetRDPEnabled(ctx context.Context, deviceID int64, enabled bool) error
+	// SetRDPBlankPolicy 记录「空密码网络登录」放行状态与原值，语义同 SetRDPEnabled。
+	SetRDPBlankPolicy(ctx context.Context, deviceID int64, allowed bool, before string) error
 }
 
 // checkResponse 是触发接口的回执，只允许这两个键（见 docs/E3-contract.md）。
@@ -46,6 +48,12 @@ type probeStatusResponse struct {
 	// RDPEnabled 是 M2 追加的键：目标机是否已启用远程桌面。
 	// 只由客户端 enable_rdp/disable_rdp 的回执改写，恒存在（老设备为 false）。
 	RDPEnabled bool `json:"rdp_enabled"`
+	// RDPBlankAllowed 恒存在：这台机的「空密码账户禁止网络登录」是否被我们放开了。
+	// 前端要长期亮着这个警示，不能只躺在指令日志里。
+	RDPBlankAllowed bool `json:"rdp_blank_allowed"`
+	// RDPBlankBefore 只在放开期间出现：放开前的原值（'0'/'1'/'absent'），
+	// 供关闭时精确恢复，也让用户看得见"原本是什么"。
+	RDPBlankBefore string `json:"rdp_blank_before,omitempty"`
 }
 
 func (s *Server) handleStartCheck(w http.ResponseWriter, r *http.Request) {
@@ -110,10 +118,12 @@ func (s *Server) handleListStatus(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, item := range list {
 		resp := probeStatusResponse{
-			DeviceID:   item.DeviceID,
-			Status:     item.Status,
-			Message:    item.Message,
-			RDPEnabled: item.RDPEnabled,
+			DeviceID:        item.DeviceID,
+			Status:          item.Status,
+			Message:         item.Message,
+			RDPEnabled:      item.RDPEnabled,
+			RDPBlankAllowed: item.RDPBlankAllowed,
+			RDPBlankBefore:  item.RDPBlankBefore,
 		}
 		if !item.CheckedAt.IsZero() {
 			resp.CheckedAt = item.CheckedAt.Format(time.RFC3339)

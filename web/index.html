@@ -89,6 +89,16 @@
   <div class="sheet">
     <h2 id="confirm-title">删除设备</h2>
     <p id="confirm-text"></p>
+    <label class="check" id="confirm-extra" hidden>
+      <input type="checkbox" id="confirm-blank">
+      <span>
+        同时允许空密码账户远程登录（安全降级）
+        <small class="hint">
+          仅当这台机的 Windows 账户确实没有密码时才需要。该策略作用于所有网络登录
+          （共享、IPC$、远程桌面），关闭远程桌面时会按原值恢复。
+        </small>
+      </span>
+    </label>
     <div class="sheet-actions">
       <button class="btn" type="button" id="confirm-cancel">取消</button>
       <button class="btn btn--danger" type="button" id="confirm-ok">删除</button>

@@ -51,6 +51,18 @@ POST /api/devices/{id}/commands          （需管理令牌）
 **只有 `shutdown` / `restart` 使用这两个字段**：`enable_rdp` / `disable_rdp` 没有"几秒后执行"的语义，
 传了也会被忽略并落库为 `delay_seconds=0`、`force=false`。
 
+`allow_blank_password`（可选，默认 `false`，F11-M2 追加）是**安全降级开关**：
+
+```json
+{ "type": "enable_rdp", "allow_blank_password": true }
+```
+
+- 只允许与 `enable_rdp` 一起使用；用在其它类型上一律 `400 invalid_command`，不静默忽略；
+- `true` 表示用户明确授权放开 `LimitBlankPasswordUse`（「空密码账户禁止网络登录」）。
+  该策略作用于**所有**网络登录（SMB 共享、`IPC$`、远程注册表、RDP），不只是 3389；
+- 服务端只在指令里记住这个布尔值，不带任何注册表值：原值由客户端读取后回传，
+  服务端保存，`disable_rdp` 时原样带回去恢复。
+
 成功 `201`：
 
 ```json
@@ -103,6 +115,17 @@ RDP 类指令（F11-M2 追加）的回执可以多带一个 `rdp_enabled`：
 { "id": 13, "ok": true, "message": "RDP 已启用 · 防火墙已放行", "rdp_enabled": true }
 ```
 
+空密码放行的回执再带两个字段（`rdp_blank_allowed` / `rdp_blank_before`）：
+
+```json
+{ "id": 13, "ok": true, "message": "RDP 已启用 · 空密码网络登录已放开（原值 1）",
+  "rdp_enabled": true, "rdp_blank_allowed": true, "rdp_blank_before": "1" }
+```
+
+`rdp_blank_before` 只接受四个值：`"0"`、`"1"`、`"absent"`（原本没有这个注册表值）、`""`（没动过）。
+其它内容一律按空处理——这个字符串最终会被客户端回写进注册表，不能是自由文本。
+`rdp_blank_allowed=false` 表示已恢复，服务端同时清空原值快照。
+
 `rdp_enabled` 是**设备 RDP 状态的唯一来源**，服务端不猜：
 
 - 只有被执行指令的类型是 `enable_rdp` / `disable_rdp`、且 `ok=true` 时才采用；
@@ -114,7 +137,10 @@ RDP 类指令（F11-M2 追加）的回执可以多带一个 `rdp_enabled`：
 - 旧客户端不读 `features` / `commands`，字段被忽略，行为不变；
 - 旧服务端不认识 `acks` 会按"未知字段"回 `400`。因此客户端**只有在回执里见过 `features` 含 `commands` 时才发送 `acks`**，避免升级顺序造成的假故障；
 - 取走指令即置 `delivered`，客户端若因断电未执行也不会重复执行：`delivered` 不再下发，靠 `expires_at` 与界面状态告知用户；
-- 指令 5 分钟未取走即 `expired`（`expires_at = created_at + 300s`）。
+- 指令 5 分钟未取走即 `expired`（`expires_at = created_at + 300s`）；
+- 指令载荷新增两个**可选**键，省略即"不授权/无需恢复"，旧客户端会自然忽略：
+  - `allow_blank_password`（仅 `enable_rdp`）：用户勾了安全降级才为 `true`；
+  - `blank_policy_before`（仅 `disable_rdp`）：服务端保存的原值，客户端据此精确恢复。
 
 ## 六、客户端执行规则
 
@@ -127,13 +153,21 @@ RDP 类指令（F11-M2 追加）的回执可以多带一个 `rdp_enabled`：
    `RemoteDesktop-UserMode-In-TCP/UDP` 启用防火墙（不能用组名，中文系统叫「远程桌面」）→
    设 `UserAuthentication=0`（关闭 NLA：网关不持凭据，NLA 会在会话建立前拦截，guacd 凭据提示框 15 秒即超时）→ 确保 `TermService` 运行；
 7. `disable_rdp` 反向：`fDenyTSConnections=1` + 关闭上述防火墙规则，不动 NLA；
+   若服务端带下 `blank_policy_before`，额外把 `LimitBlankPasswordUse` 恢复为该原值
+   （`"absent"` 则删除该注册表值），并回读确认；恢复不了就如实回执"未确认"，不谎报成功；
 8. 两者最后都**回读注册表**给结论：`fDenyTSConnections=0` 才算启用成功，
    并顺带检查 3389 是否 LISTENING（未监听会在回执里说明，常见原因是组策略限制）；
-9. 非管理员运行时 `reg add` 会被拒绝，回执为 `ok=false` 且 message 明确写"需要以管理员身份运行客户端"。
+9. 非管理员运行时 `reg add` 会被拒绝，回执为 `ok=false` 且 message 明确写"需要以管理员身份运行客户端"；
+10. 空密码放行（仅 `allow_blank_password=true`）：先读 `LimitBlankPasswordUse` 原值 →
+    写 `0` → 回读确认。**读不到原值就绝不修改**：没有原值就无法恢复，宁可让用户手工处理。
+    本机没有空密码账户时只在回执里提示，不否决用户的明确授权（域账户、微软账户在
+    `Get-LocalUser` 里看不到，按"没账户"处理会把用户堵死）。
 
 ## 七、安全
 
 - 下发接口需管理令牌；指令表记录时间与结果，可在界面追溯；
-- 客户端只执行服务端下发的四种固定指令，参数全部写死在客户端里，
+- 客户端只执行服务端下发的四种固定指令，参数基本写死在客户端里，
   服务端只能选"执行哪一种"、不能改参数（无 shell 注入面）；
+- 唯一的服务端可控参数是 `allow_blank_password`（布尔）与 `blank_policy_before`
+  （白名单枚举 `0`/`1`/`absent`），两者都经过类型校验，不构成注入面；
 - 心跳密钥即设备凭据：拿到密钥的人能让该设备关机，因此密钥按口令对待，不入日志、不入截图。

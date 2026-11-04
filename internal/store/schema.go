@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS device (
 	metrics_json     TEXT    NOT NULL DEFAULT '',
 	metrics_at       TEXT    NOT NULL DEFAULT '',
 	rdp_enabled      INTEGER NOT NULL DEFAULT 0,
+	rdp_blank_before TEXT    NOT NULL DEFAULT '',
+	rdp_blank_allowed INTEGER NOT NULL DEFAULT 0,
 	created_at       TEXT    NOT NULL,
 	updated_at       TEXT    NOT NULL
 );
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS device_command (
 	force          INTEGER NOT NULL DEFAULT 0,
 	status         TEXT    NOT NULL DEFAULT 'pending',
 	message        TEXT    NOT NULL DEFAULT '',
+	allow_blank_password INTEGER NOT NULL DEFAULT 0,
 	created_at     TEXT    NOT NULL,
 	delivered_at   TEXT    NOT NULL DEFAULT '',
 	finished_at    TEXT    NOT NULL DEFAULT '',
@@ -60,17 +63,22 @@ func (d *DB) Migrate(ctx context.Context) error {
 		return fmt.Errorf("初始化 device_command 表失败: %w", err)
 	}
 
-	// E1 建库时没有这几列，老数据文件需要补列。用默认值填充，不重写已有行。
-	added := []struct{ name, ddl string }{
-		{"probe_status", `ALTER TABLE device ADD COLUMN probe_status TEXT NOT NULL DEFAULT 'pending'`},
-		{"probe_message", `ALTER TABLE device ADD COLUMN probe_message TEXT NOT NULL DEFAULT ''`},
-		{"probe_checked_at", `ALTER TABLE device ADD COLUMN probe_checked_at TEXT NOT NULL DEFAULT ''`},
-		{"metrics_json", `ALTER TABLE device ADD COLUMN metrics_json TEXT NOT NULL DEFAULT ''`},
-		{"metrics_at", `ALTER TABLE device ADD COLUMN metrics_at TEXT NOT NULL DEFAULT ''`},
-		{"rdp_enabled", `ALTER TABLE device ADD COLUMN rdp_enabled INTEGER NOT NULL DEFAULT 0`},
+	// 老库缺列时补列。用默认值填充，不重写已有行。
+	// rdp_blank_before 用空串表示"我们没动过这条策略"，而不是用 0/1——
+	// 必须能把"原本就是 0"与"从没碰过"区分开，否则关闭 RDP 时会替用户写一个他没设过的值。
+	added := []struct{ table, name, ddl string }{
+		{"device", "probe_status", `ALTER TABLE device ADD COLUMN probe_status TEXT NOT NULL DEFAULT 'pending'`},
+		{"device", "probe_message", `ALTER TABLE device ADD COLUMN probe_message TEXT NOT NULL DEFAULT ''`},
+		{"device", "probe_checked_at", `ALTER TABLE device ADD COLUMN probe_checked_at TEXT NOT NULL DEFAULT ''`},
+		{"device", "metrics_json", `ALTER TABLE device ADD COLUMN metrics_json TEXT NOT NULL DEFAULT ''`},
+		{"device", "metrics_at", `ALTER TABLE device ADD COLUMN metrics_at TEXT NOT NULL DEFAULT ''`},
+		{"device", "rdp_enabled", `ALTER TABLE device ADD COLUMN rdp_enabled INTEGER NOT NULL DEFAULT 0`},
+		{"device", "rdp_blank_before", `ALTER TABLE device ADD COLUMN rdp_blank_before TEXT NOT NULL DEFAULT ''`},
+		{"device", "rdp_blank_allowed", `ALTER TABLE device ADD COLUMN rdp_blank_allowed INTEGER NOT NULL DEFAULT 0`},
+		{"device_command", "allow_blank_password", `ALTER TABLE device_command ADD COLUMN allow_blank_password INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, col := range added {
-		exists, err := d.hasColumn(ctx, "device", col.name)
+		exists, err := d.hasColumn(ctx, col.table, col.name)
 		if err != nil {
 			return err
 		}
@@ -78,7 +86,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 			continue
 		}
 		if _, err := d.sql.ExecContext(ctx, col.ddl); err != nil {
-			return fmt.Errorf("为 device 表补列 %s 失败: %w", col.name, err)
+			return fmt.Errorf("为 %s 表补列 %s 失败: %w", col.table, col.name, err)
 		}
 	}
 	return nil

@@ -29,15 +29,21 @@ const (
 // MetricsJSON 是 F11 心跳附带指标的原始 JSON（可能为空），MetricsAt 为其上报时间。
 // RDPEnabled 是目标机 RDP 是否可用的结论：只由客户端 enable_rdp/disable_rdp 的回执改写，
 // 服务端不猜（M2 契约）。
+//
+// RDPBlankAllowed 表示这台机的「空密码账户禁止网络登录」策略当前是否**由我们**放开了。
+// RDPBlankBefore 是放开之前的原值：” 表示没动过，'0'/'1' 是原值，'absent' 表示原本没有这个键。
+// 两者一起构成可逆性：客户端重装、换机后仍能按原值恢复，不会一律写回 1。
 type ProbeStatus struct {
-	DeviceID    int64
-	Status      string
-	Message     string
-	ProbeType   string
-	CheckedAt   time.Time
-	MetricsJSON string
-	MetricsAt   time.Time
-	RDPEnabled  bool
+	DeviceID        int64
+	Status          string
+	Message         string
+	ProbeType       string
+	CheckedAt       time.Time
+	MetricsJSON     string
+	MetricsAt       time.Time
+	RDPEnabled      bool
+	RDPBlankAllowed bool
+	RDPBlankBefore  string
 }
 
 // MarkChecking 标记校验开始。不刷新 checked_at：
@@ -89,7 +95,7 @@ func (d *DB) setProbeStatus(ctx context.Context, deviceID int64, status, message
 func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT id, probe_status, probe_message, probe_type, probe_checked_at,
-		        metrics_json, metrics_at, rdp_enabled
+		        metrics_json, metrics_at, rdp_enabled, rdp_blank_allowed, rdp_blank_before
 		   FROM device ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("查询校验状态失败: %w", err)
@@ -99,17 +105,21 @@ func (d *DB) ListProbeStatus(ctx context.Context) ([]ProbeStatus, error) {
 	list := make([]ProbeStatus, 0, 16)
 	for rows.Next() {
 		var (
-			ps      ProbeStatus
-			checked string
-			metrics string
-			metAt   string
-			rdp     int
+			ps       ProbeStatus
+			checked  string
+			metrics  string
+			metAt    string
+			rdp      int
+			blankOn  int
+			blankRaw string
 		)
 		if err := rows.Scan(&ps.DeviceID, &ps.Status, &ps.Message, &ps.ProbeType, &checked,
-			&metrics, &metAt, &rdp); err != nil {
+			&metrics, &metAt, &rdp, &blankOn, &blankRaw); err != nil {
 			return nil, fmt.Errorf("读取校验状态失败: %w", err)
 		}
 		ps.RDPEnabled = rdp != 0
+		ps.RDPBlankAllowed = blankOn != 0
+		ps.RDPBlankBefore = blankRaw
 		if checked != "" {
 			t, err := parseTime(checked)
 			if err != nil {
@@ -140,6 +150,28 @@ func (d *DB) SetRDPEnabled(ctx context.Context, deviceID int64, enabled bool) er
 		`UPDATE device SET rdp_enabled = ? WHERE id = ?`, boolToInt(enabled), deviceID)
 	if err != nil {
 		return fmt.Errorf("写入 RDP 状态失败: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetRDPBlankPolicy 记录「空密码账户禁止网络登录」的放行状态与原始策略值。
+//
+// 只由客户端 enable_rdp/disable_rdp 的回执调用，语义与 SetRDPEnabled 一致：
+// 服务端没有能力读到目标机的策略，也就不去猜。
+// allowed=false 时 before 必须传空串：关闭即视为"我们不再持有这条策略"，
+// 下一次启用重新读当时的原值，避免拿一份过期快照去覆盖用户的后续修改。
+func (d *DB) SetRDPBlankPolicy(ctx context.Context, deviceID int64, allowed bool, before string) error {
+	if !allowed {
+		before = ""
+	}
+	res, err := d.sql.ExecContext(ctx,
+		`UPDATE device SET rdp_blank_allowed = ?, rdp_blank_before = ? WHERE id = ?`,
+		boolToInt(allowed), before, deviceID)
+	if err != nil {
+		return fmt.Errorf("写入空密码策略状态失败: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return ErrNotFound

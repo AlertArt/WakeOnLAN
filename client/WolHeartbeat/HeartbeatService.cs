@@ -285,10 +285,22 @@ public sealed class HeartbeatService : IDisposable
                 var delay = item.TryGetProperty("delay_seconds", out var delayProp) && delayProp.TryGetInt32(out var d) ? d : 60;
                 var force = item.TryGetProperty("force", out var forceProp) && forceProp.ValueKind == JsonValueKind.True;
 
-                AppLog.Info($"收到远程指令：{type}，延时 {delay} 秒，强制={force}");
+                // 空密码放行：服务端只在用户勾选后才下发 true；老服务端没有这个键即 false。
+                var allowBlank = item.TryGetProperty("allow_blank_password", out var blankProp) &&
+                                 blankProp.ValueKind == JsonValueKind.True;
+                // 关闭 RDP 时服务端会把策略原值带下来，让客户端能改回原样。
+                var blankBefore = item.TryGetProperty("blank_policy_before", out var beforeProp) &&
+                                  beforeProp.ValueKind == JsonValueKind.String
+                    ? beforeProp.GetString() ?? ""
+                    : "";
 
-                var result = CommandRunner.Execute(type, delay, force);
-                QueueAck(new CommandAck(id, result.Ok, result.Message, result.RdpEnabled));
+                AppLog.Info($"收到远程指令：{type}，延时 {delay} 秒，强制={force}" +
+                            (allowBlank ? "，已授权放开空密码登录" : "") +
+                            (blankBefore != "" ? $"，空密码策略原值 {blankBefore}" : ""));
+
+                var result = CommandRunner.Execute(type, delay, force, allowBlank, blankBefore);
+                QueueAck(new CommandAck(id, result.Ok, result.Message, result.RdpEnabled,
+                    result.RdpBlankAllowed, result.RdpBlankBefore));
                 CommandExecuted?.Invoke(new CommandOutcome(id, type, result.Ok, result.Message));
             }
         }
@@ -386,7 +398,15 @@ public sealed class HeartbeatService : IDisposable
         // 只有 RDP 类指令才带：null 时序列化时整个键都不出现（旧服务端不会因未知字段 400）。
         [property: JsonPropertyName("rdp_enabled")]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        bool? RdpEnabled);
+        bool? RdpEnabled,
+        // 空密码策略的回执：allowed 表示改完之后是否处于放开状态，
+        // before 是动手前的原值（'0'/'1'/'absent'），服务端据此做精确恢复。
+        [property: JsonPropertyName("rdp_blank_allowed")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        bool? RdpBlankAllowed,
+        [property: JsonPropertyName("rdp_blank_before")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? RdpBlankBefore);
 
     private static int ReadInt(string body, string name, int fallback)
     {

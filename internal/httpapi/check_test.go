@@ -58,6 +58,9 @@ type fakeStatusStore struct {
 	metrics map[int64]store.Metrics
 	// rdp 记录 SetRDPEnabled 的最近一次写入，供 M2 用例断言。
 	rdp map[int64]bool
+	// blankAllowed / blankBefore 记录空密码策略的写入，供可逆性用例断言。
+	blankAllowed map[int64]bool
+	blankBefore  map[int64]string
 }
 
 func (f *fakeStatusStore) ListProbeStatus(context.Context) ([]store.ProbeStatus, error) {
@@ -91,6 +94,30 @@ func (f *fakeStatusStore) SetRDPEnabled(_ context.Context, deviceID int64, enabl
 	return nil
 }
 
+func (f *fakeStatusStore) SetRDPBlankPolicy(_ context.Context, deviceID int64, allowed bool, before string) error {
+	if f.markErr != nil {
+		return f.markErr
+	}
+	if f.blankAllowed == nil {
+		f.blankAllowed = map[int64]bool{}
+	}
+	if f.blankBefore == nil {
+		f.blankBefore = map[int64]string{}
+	}
+	f.blankAllowed[deviceID] = allowed
+	if !allowed {
+		before = ""
+	}
+	f.blankBefore[deviceID] = before
+	for i := range f.items {
+		if f.items[i].DeviceID == deviceID {
+			f.items[i].RDPBlankAllowed = allowed
+			f.items[i].RDPBlankBefore = before
+		}
+	}
+	return nil
+}
+
 func (f *fakeStatusStore) SaveMetrics(_ context.Context, deviceID int64, m *store.Metrics, at time.Time) error {
 	if f.markErr != nil {
 		return f.markErr
@@ -116,9 +143,9 @@ func newFakeStatusStore() *fakeStatusStore { return &fakeStatusStore{items: []st
 // 触发校验与状态查询的字段白名单，按字母序。
 var (
 	checkContractKeys = []string{"started_at", "status"}
-	// F11-M1 追加 metrics/metrics_at（可选键），M2 追加 rdp_enabled（恒存在）。
+	// F11-M1 追加 metrics/metrics_at（可选键），M2 追加 rdp_enabled 与 rdp_blank_allowed（恒存在）。
 	// 白名单只列"无指标时也一定出现"的键，可选键另有用例单独断言。
-	statusContractKeys = []string{"checked_at", "device_id", "message", "rdp_enabled", "status"}
+	statusContractKeys = []string{"checked_at", "device_id", "message", "rdp_blank_allowed", "rdp_enabled", "status"}
 )
 
 type checkFixture struct {

@@ -42,6 +42,11 @@ type heartbeatAck struct {
 	OK         bool   `json:"ok"`
 	Message    string `json:"message"`
 	RDPEnabled *bool  `json:"rdp_enabled,omitempty"`
+	// RDPBlankAllowed / RDPBlankBefore 是「空密码网络登录」放行状态的回执：
+	// 客户端改完策略后把"现在是否放开"和"改之前的原值"一起报上来。
+	// 只带 allowed 不带 before 的回执按"没有原值可恢复"处理，宁可少恢复也不乱写。
+	RDPBlankAllowed *bool   `json:"rdp_blank_allowed,omitempty"`
+	RDPBlankBefore  *string `json:"rdp_blank_before,omitempty"`
 }
 
 // heartbeatResponse 是心跳回执。interval_seconds 让客户端不必自己写死间隔；
@@ -61,6 +66,11 @@ type heartbeatCommand struct {
 	DelaySeconds int    `json:"delay_seconds"`
 	Force        bool   `json:"force"`
 	ExpiresAt    string `json:"expires_at"`
+	// AllowBlankPassword 只在用户勾选了安全降级时为 true；省略即为不放行。
+	AllowBlankPassword bool `json:"allow_blank_password,omitempty"`
+	// BlankPolicyBefore 只随 disable_rdp 下发：服务端保存的策略原值，
+	// 让客户端能"改回原样"而不是一律写 1。'' 表示我们没动过，无需恢复。
+	BlankPolicyBefore string `json:"blank_policy_before,omitempty"`
 }
 
 // heartbeatFeatures 声明本服务端支持的能力。
@@ -130,15 +140,32 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		Features:        heartbeatFeatures,
 	}
 	if len(pending) > 0 {
+		// 关闭远程桌面时要把「空密码网络登录」恢复成原值，原值存在设备行上。
+		// 只在真有 disable_rdp 时才查，正常心跳不付这份开销。
+		blankBefore := ""
+		for _, cmd := range pending {
+			if cmd.Type == store.CommandDisableRDP {
+				blankBefore = s.rdpBlankBefore(r.Context(), dv.ID)
+				break
+			}
+		}
+
 		resp.Commands = make([]heartbeatCommand, 0, len(pending))
 		for _, cmd := range pending {
-			resp.Commands = append(resp.Commands, heartbeatCommand{
+			item := heartbeatCommand{
 				ID:           cmd.ID,
 				Type:         cmd.Type,
 				DelaySeconds: cmd.DelaySeconds,
 				Force:        cmd.Force,
 				ExpiresAt:    cmd.ExpiresAt.UTC().Format(time.RFC3339),
-			})
+			}
+			if cmd.Type == store.CommandEnableRDP {
+				item.AllowBlankPassword = cmd.AllowBlankPassword
+			}
+			if cmd.Type == store.CommandDisableRDP {
+				item.BlankPolicyBefore = blankBefore
+			}
+			resp.Commands = append(resp.Commands, item)
 			s.logger.Info("指令已随心跳下发", "device_id", dv.ID, "command", cmd.Type, "command_id", cmd.ID)
 		}
 	}
@@ -160,6 +187,7 @@ func (s *Server) applyAcks(ctx context.Context, deviceID int64, acks []heartbeat
 			s.logger.Info("指令执行回执", "device_id", deviceID, "command_id", ack.ID,
 				"command", cmd.Type, "ok", ack.OK)
 			s.applyRDPState(ctx, deviceID, cmd.Type, ack)
+			s.applyRDPBlankPolicy(ctx, deviceID, cmd.Type, ack)
 		case errors.Is(err, store.ErrCommandNotFound):
 			s.logger.Warn("忽略未知指令回执", "device_id", deviceID, "command_id", ack.ID)
 		default:
@@ -185,6 +213,64 @@ func (s *Server) applyRDPState(ctx context.Context, deviceID int64, commandType 
 		return
 	}
 	s.logger.Info("RDP 状态已更新", "device_id", deviceID, "rdp_enabled", *ack.RDPEnabled)
+}
+
+// applyRDPBlankPolicy 记录「空密码账户禁止网络登录」的放行状态。
+//
+// 只在客户端明确回传 rdp_blank_allowed 时才动状态：
+//   - 启用时客户端会带 allowed=true 与 before（原值快照）；
+//   - 关闭时客户端恢复完原值带 allowed=false；
+//   - 老客户端不带这两个键，保持原状态——若我们之前确实放开过，
+//     状态就该继续显示"已放开"，因为目标机上也确实还开着。
+func (s *Server) applyRDPBlankPolicy(ctx context.Context, deviceID int64, commandType string, ack heartbeatAck) {
+	if commandType != store.CommandEnableRDP && commandType != store.CommandDisableRDP {
+		return
+	}
+	if !ack.OK || ack.RDPBlankAllowed == nil {
+		// 授权了却没回传结果：多半是目标机还跑着不认识这个键的旧客户端。
+		// 不猜状态，但要留一条能查的线索，否则页面会一直显示"未放开"而没人知道为什么。
+		if ack.OK && commandType == store.CommandEnableRDP {
+			s.logger.Warn("客户端未回传空密码策略状态（可能是旧版本客户端）", "device_id", deviceID)
+		}
+		return
+	}
+
+	before := ""
+	if *ack.RDPBlankAllowed && ack.RDPBlankBefore != nil {
+		before = normalizeBlankBefore(*ack.RDPBlankBefore)
+	}
+	if err := s.statuses.SetRDPBlankPolicy(ctx, deviceID, *ack.RDPBlankAllowed, before); err != nil {
+		s.logger.Error("更新空密码策略状态失败", "device_id", deviceID, "err", err)
+		return
+	}
+	s.logger.Info("空密码策略状态已更新", "device_id", deviceID,
+		"allowed", *ack.RDPBlankAllowed, "before", before)
+}
+
+// normalizeBlankBefore 只接受三种取值：”（没动过）、'0'、'1'、'absent'（原本无此键）。
+// 其它内容一律当空处理：这份值最终会被回写给目标机，不能是客户端随口传的字符串。
+func normalizeBlankBefore(raw string) string {
+	switch raw {
+	case "0", "1", "absent":
+		return raw
+	default:
+		return ""
+	}
+}
+
+// rdpBlankBefore 读取设备记录的空密码策略原值，供 disable_rdp 精确恢复。
+func (s *Server) rdpBlankBefore(ctx context.Context, deviceID int64) string {
+	list, err := s.statuses.ListProbeStatus(ctx)
+	if err != nil {
+		s.logger.Error("读取空密码策略原值失败", "device_id", deviceID, "err", err)
+		return ""
+	}
+	for _, item := range list {
+		if item.DeviceID == deviceID {
+			return item.RDPBlankBefore
+		}
+	}
+	return ""
 }
 
 // parseMetrics 把客户端发来的宽松 JSON 对象解析成结构化指标。

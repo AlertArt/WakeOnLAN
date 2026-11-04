@@ -22,10 +22,23 @@ internal static class CommandRunner
         Array.IndexOf(SupportedTypes, type) >= 0;
 
     /// <summary>指令执行结果。RdpEnabled 只对 RDP 类指令有意义，null 表示"没结论"。</summary>
-    public sealed record CommandResult(bool Ok, string Message, bool? RdpEnabled = null);
+    /// <remarks>
+    /// RdpBlankAllowed / RdpBlankBefore 是「空密码网络登录」策略的回执：
+    /// 前者表示改完之后策略是否处于放开状态，后者是我们动手之前的原值
+    /// （'0' / '1' / 'absent'，空串表示没动过）。服务端靠这两个值做精确恢复。
+    /// </remarks>
+    public sealed record CommandResult(
+        bool Ok,
+        string Message,
+        bool? RdpEnabled = null,
+        bool? RdpBlankAllowed = null,
+        string? RdpBlankBefore = null);
 
     /// <summary>执行一条指令，返回结果说明（会回执给服务端）。</summary>
-    public static CommandResult Execute(string type, int delaySeconds, bool force)
+    /// <param name="allowBlank">仅 enable_rdp 有效：用户是否显式授权放开空密码网络登录。</param>
+    /// <param name="blankBefore">仅 disable_rdp 有效：服务端保存的策略原值，用于精确恢复。</param>
+    public static CommandResult Execute(
+        string type, int delaySeconds, bool force, bool allowBlank = false, string blankBefore = "")
     {
         if (!IsSupported(type))
         {
@@ -34,8 +47,8 @@ internal static class CommandRunner
 
         return type switch
         {
-            "enable_rdp" => SetRdp(true),
-            "disable_rdp" => SetRdp(false),
+            "enable_rdp" => SetRdp(true, allowBlank, ""),
+            "disable_rdp" => SetRdp(false, false, blankBefore),
             _ => ScheduleShutdown(type, delaySeconds, force),
         };
     }
@@ -81,9 +94,12 @@ internal static class CommandRunner
     ///   3) NLA：Win10 默认要求网络级身份验证，关掉反而会被策略拒绝；
     ///   4) TermService：服务没起来时注册表再对也不会监听 3389。
     ///
+    /// 第 5 步是可选的：空密码账户默认不允许**任何**网络登录（SMB/IPC$/RDP 都管），
+    /// 只有用户显式授权才放开，且关 RDP 时按原值恢复。
+    ///
     /// 做完回读注册表确认，只有真的改成了才回执 rdp_enabled=true。
     /// </summary>
-    private static CommandResult SetRdp(bool enable)
+    private static CommandResult SetRdp(bool enable, bool allowBlank, string blankBefore)
     {
         var value = enable ? "0" : "1";
 
@@ -92,6 +108,14 @@ internal static class CommandRunner
             var plan = enable
                 ? "fDenyTSConnections=0、启用防火墙规则 RemoteDesktop-UserMode-In-TCP/UDP、确保 TermService 运行"
                 : "fDenyTSConnections=1、关闭防火墙规则 RemoteDesktop-UserMode-In-TCP/UDP";
+            if (enable && allowBlank)
+            {
+                plan += "、放开空密码网络登录（LimitBlankPasswordUse=0）";
+            }
+            if (!enable && blankBefore != "")
+            {
+                plan += $"，恢复空密码策略原值（{blankBefore}）";
+            }
             AppLog.Info($"[演练] 本应执行：{plan}");
             return new CommandResult(true, $"演练模式，未真正执行：{plan}");
         }
@@ -150,7 +174,69 @@ internal static class CommandRunner
             }
         }
 
-        // 5) 回读注册表给结论：只认实际值，不认"命令返回 0"。
+        // 5) 空密码网络登录（仅启用且用户显式授权时）。
+        //
+        // LimitBlankPasswordUse 管的不是 3389，而是**所有**网络登录（SMB、IPC$、远程注册表…），
+        // Windows 没有"只对远程桌面放开"的开关。所以它必须是一个独立、需授权、可逆的动作：
+        //   - 未授权：一个字都不动；
+        //   - 已授权：先读原值再改，原值随回执交给服务端保存，关 RDP 时按原值恢复；
+        //   - 检测到本机没有空密码账户时只在回执里提示，不否决用户的明确授权——
+        //     域账户/微软账户在 Get-LocalUser 里看不到，误判成"不需要"会让用户勾了却查不出原因。
+        bool? blankAllowed = null;
+        var blankBeforeValue = "";
+        if (enable && allowBlank)
+        {
+            var (probeOk, hasBlank) = DetectBlankAccount();
+            var (readOk, before) = ReadBlankPolicy();
+            if (!readOk)
+            {
+                // 读不到原值就不能改：没有原值就无法恢复，宁可让用户手工处理。
+                steps.Append("；空密码策略原值读取失败，为可逆起见未修改");
+            }
+            else
+            {
+                var (writeOk, writeMsg) = WriteBlankPolicy("0");
+                var (afterOk, after) = writeOk ? ReadBlankPolicy() : (false, "");
+                if (afterOk && after == "0")
+                {
+                    blankAllowed = true;
+                    blankBeforeValue = before;
+                    steps.Append(before == "0"
+                        ? "；空密码网络登录原本已放开"
+                        : $"；空密码网络登录已放开（原值 {before}）");
+                    if (probeOk && !hasBlank)
+                    {
+                        steps.Append("；未检测到空密码本地账户，如仍无法登录请检查远程账户类型");
+                    }
+                }
+                else
+                {
+                    blankAllowed = false;
+                    steps.Append($"；空密码策略修改未生效（{Shorten(writeMsg)}）");
+                }
+            }
+        }
+        else if (!enable && blankBefore != "")
+        {
+            // 只有确实由我们改过（before 非空）才恢复，且恢复的是原值而不是固定写 1。
+            var (writeOk, writeMsg) = WriteBlankPolicy(blankBefore);
+            var (afterOk, after) = writeOk ? ReadBlankPolicy() : (false, "");
+            if (afterOk && after == blankBefore)
+            {
+                blankAllowed = false;
+                blankBeforeValue = "";
+                steps.Append(blankBefore == "absent"
+                    ? "；空密码策略已恢复为未设置"
+                    : $"；空密码策略已恢复为 {blankBefore}");
+            }
+            else
+            {
+                // 恢复失败或无法确认：不谎报"已恢复"，状态继续显示已放开，下次还能再试。
+                steps.Append($"；空密码策略恢复未确认（{Shorten(writeMsg)}）");
+            }
+        }
+
+        // 6) 回读注册表给结论：只认实际值，不认"命令返回 0"。
         var actual = ReadDenyValue();
         if (actual is null)
         {
@@ -170,10 +256,101 @@ internal static class CommandRunner
 
         var finalOk = enabled == enable;
         AppLog.Info($"RDP 开关结果：{summary}");
-        return new CommandResult(finalOk, summary.ToString(), enabled);
+        return new CommandResult(
+            finalOk,
+            summary.ToString(),
+            enabled,
+            blankAllowed,
+            blankBeforeValue == "" ? null : blankBeforeValue);
     }
 
     private static string Action(bool enable) => enable ? "启用远程桌面" : "关闭远程桌面";
+
+    private const string LsaKey = @"HKLM\SYSTEM\CurrentControlSet\Control\Lsa";
+
+    /// <summary>
+    /// 读取 LimitBlankPasswordUse。Value 取值：'0' / '1' / "absent"（值不存在）。
+    /// Ok=false 表示读取本身失败——这种情况绝不能当作"不存在"去改，
+    /// 否则关闭时就不知道该恢复成什么。
+    /// </summary>
+    private static (bool Ok, string Value) ReadBlankPolicy()
+    {
+        // 用 PowerShell 而不是 reg.exe：reg 的"找不到"提示是本地化文本，
+        // 中文/英文/其它语言的匹配规则各不相同，中文系统按 UTF8 解码还会乱码。
+        var script =
+            "$v=(Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' " +
+            "-Name LimitBlankPasswordUse -ErrorAction SilentlyContinue).LimitBlankPasswordUse; " +
+            "if ($null -eq $v) { 'ABSENT' } else { 'VALUE=' + $v }";
+        var (ok, output) = RunTool("powershell.exe",
+            $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script}\"",
+            "读取空密码策略", timeoutMs: 20000);
+        if (!ok)
+        {
+            return (false, "");
+        }
+
+        var text = output.Trim();
+        if (text.Contains("ABSENT", StringComparison.Ordinal))
+        {
+            return (true, "absent");
+        }
+        var idx = text.IndexOf("VALUE=", StringComparison.Ordinal);
+        if (idx >= 0)
+        {
+            var raw = text[(idx + "VALUE=".Length)..].Trim();
+            var token = raw.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (token.Length > 0 && (token[0] == "0" || token[0] == "1"))
+            {
+                return (true, token[0]);
+            }
+        }
+        return (false, "");
+    }
+
+    /// <summary>把 LimitBlankPasswordUse 写成 0/1；value 为 "absent" 时删除该值。</summary>
+    private static (bool Ok, string Message) WriteBlankPolicy(string value)
+    {
+        if (value == "absent")
+        {
+            return RunTool("reg.exe",
+                $"delete \"{LsaKey}\" /v LimitBlankPasswordUse /f",
+                "删除空密码策略值");
+        }
+        return RunTool("reg.exe",
+            $"add \"{LsaKey}\" /v LimitBlankPasswordUse /t REG_DWORD /d {value} /f",
+            "写入空密码策略");
+    }
+
+    /// <summary>
+    /// 检测本机是否存在「已启用且无密码」的本地账户。
+    /// Ok=false 表示无法判定（老系统没有 Get-LocalUser），此时按用户已授权照常执行；
+    /// Ok=true 且 HasBlank=false 才是"确实不需要"，跳过修改。
+    /// </summary>
+    private static (bool Ok, bool HasBlank) DetectBlankAccount()
+    {
+        var script =
+            "$n=@(Get-LocalUser -ErrorAction SilentlyContinue | " +
+            "Where-Object { $_.Enabled -and -not $_.PasswordRequired }); " +
+            "if ($n.Count -eq 0) { 'NOBLANK' } else { 'BLANK' }";
+        var (ok, output) = RunTool("powershell.exe",
+            $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script}\"",
+            "检测空密码账户", timeoutMs: 20000);
+        if (!ok)
+        {
+            return (false, false);
+        }
+
+        var text = output.Trim();
+        if (text.Contains("NOBLANK", StringComparison.Ordinal))
+        {
+            return (true, false);
+        }
+        if (text.Contains("BLANK", StringComparison.Ordinal))
+        {
+            return (true, true);
+        }
+        return (false, false);
+    }
 
     /// <summary>回读 fDenyTSConnections，读不到返回 null。</summary>
     private static int? ReadDenyValue()

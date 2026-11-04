@@ -2,7 +2,7 @@
 
 单用户、自用的局域网唤醒服务：录入设备 → 点一下 → 发送 WOL 魔术包 → 用 Ping / TCP 端口探测给出"已上线 / 超时未响应"的明确结论。移动端为响应式 Web + PWA，部署为单容器 + 单文件 SQLite。
 
-> 当前版本 **v2.0.0-beta.1**：在唤醒与在线校验之上，新增**远程关机/重启**（指令随心跳下发，目标机零入站端口）与**设备状态指标**（CPU / 内存 / 磁盘 / 网速 / IP / 开机时长）。离线包与客户端见 [Releases](https://github.com/AlertArt/WakeOnLAN/releases)；远程桌面网关（Guacamole）与改网络后的自动回滚仍在计划中，见 `docs/F11-remote-access-plan.md`。
+> 当前版本 **v2.0.0-beta.6**：在唤醒与在线校验之上，新增**远程关机/重启**（指令随心跳下发，目标机零入站端口）、**设备状态指标**（CPU / 内存 / 磁盘 / 网速 / IP / 开机时长）与**远程桌面**（Guacamole 网关，浏览器直接进 Windows 桌面）。离线包与客户端见 [Releases](https://github.com/AlertArt/WakeOnLAN/releases)；改网络后的自动回滚（M3）仍在计划中，见 `docs/F11-remote-access-plan.md`。
 
 ## 快速开始（本地）
 
@@ -138,7 +138,8 @@ docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t wol:2.0.0-beta.1 .
 
 网页点「远程桌面」→ 自动开启目标机 RDP → 浏览器新标签页进入完整 Windows 桌面（Guacamole 网关，手机/平板可用）。
 
-- 服务端新增 `enable_rdp` / `disable_rdp` 指令：客户端打开 RDP 开关、按**规则名**放行防火墙（跨语言有效）、启用 NLA 并确保 TermService 运行，做完回读注册表才回执 `rdp_enabled`——服务端只信回执，不猜测；
+- 服务端新增 `enable_rdp` / `disable_rdp` 指令：客户端打开 RDP 开关、按**规则名**放行防火墙（跨语言有效）、关闭 NLA（`UserAuthentication=0`，否则 guacd 的凭据提示 15 秒必超时）并确保 TermService 运行，做完回读注册表才回执 `rdp_enabled`——服务端只信回执，不猜测；
+- **空密码账户**（开机不用输密码）默认无法远程登录：Windows 的 `LimitBlankPasswordUse` 禁止空密码账户**所有**网络登录。启用远程桌面时可显式勾选「允许空密码账户远程登录」——客户端先读原值再改、服务端保存原值、关闭 RDP 时按原值恢复（原本没有该键则删除），页面常驻「空密码登录已放开」警示。默认不勾选；
 - 会话票据一次性、60 秒过期：`POST /api/devices/{id}/rdp-session` 返回 `/rdp/<ticket>`，兑换时生成 Guacamole 载荷并 302 跳转，载荷放在 URL fragment 里（不进服务端与访问日志），日志中票据固定记为占位符；
 - 采用官方 `guacamole-auth-json` 扩展：wold 与 Guacamole 共享一个 32 位十六进制密钥（`WOL_GUAC_SECRET`），**不需要数据库、不需要管理员 REST API**；guacd/guacamole 容器放在 compose 的 `rdp` profile 下，不启用远程桌面则完全不会启动；
 - 未配置 `WOL_GUAC_URL`/`WOL_GUAC_SECRET` 时功能降级：接口返回 503 与明确提示，其余功能不受影响；

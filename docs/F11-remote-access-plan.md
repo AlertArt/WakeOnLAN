@@ -80,6 +80,11 @@
 1. F10 指令通道新增指令类型（`docs/F10-command-contract.md` 同步更新）：
    - `enable_rdp`：`reg add ... fDenyTSConnections=0` + 防火墙放行远程桌面组 + 关闭 NLA（`UserAuthentication=0`，凭据改在会话内的 Windows 登录界面输入）；
    - `disable_rdp`：反向。
+   - **空密码安全降级（可选）**：Windows 默认禁止空密码账户**任何**网络登录（`LimitBlankPasswordUse=1`，作用于 SMB/IPC$/远程桌面，不存在"只放开 RDP"的开关）。因此不跟随 RDP 开关自动执行，而是作为显式授权项：
+     - 指令参数 `allow_blank_password`（默认 false，只允许与 `enable_rdp` 组合，其它类型 400）；
+     - 客户端**先读原值**再改成 0，把原值随回执交给服务端保存；`disable_rdp` 时服务端把原值带下去，客户端恢复原值（`absent` 则删键），回读确认后才算成功；
+     - 服务端 `device.rdp_blank_allowed` / `rdp_blank_before` 记录状态，`/api/status` 暴露，页面常驻「空密码登录已放开」标签；
+     - 读不到原值就绝不修改（没有原值就无法恢复）；本机没有空密码账户只作提示，不否决用户授权。
 2. `enable_rdp` 成功回执后，服务端把该设备的 `rdp_enabled=1`（由客户端回执携带，服务端不猜测）。
 3. Guacamole 集成（NAS 侧新增容器，wold 不内嵌流媒体）——**按 auth-json 方案落地**：
    - `deploy/docker-compose.nas.yml` 增加 `guacd` + `guacamole` 两个服务，加入独立内网 `guac`，guacd 无宿主端口，guacamole 默认只绑 `127.0.0.1` 可达的 8088；两容器放 `rdp` profile，不启用远程桌面则不启动；凭据经环境变量注入；
@@ -92,6 +97,7 @@
 ### 客户端
 
 1. `CommandRunner` 增加 `enable_rdp` / `disable_rdp` 分支：四步走——注册表总开关 → 防火墙**按规则名**放行（`RemoteDesktop-UserMode-In-TCP/UDP`，与系统语言无关；不用组名，中文系统组名是「远程桌面」）→ 关闭 NLA（`UserAuthentication=0`）→ 确保 TermService 运行；逐条执行、逐条记录日志；
+   第 5 步（可选）：用户授权时放开空密码网络登录，读原值 → 写 0 → 回读；关闭时按服务端带下的原值恢复；
 2. 执行后回执 message 带结果摘要（如 `RDP 已启用` / `防火墙规则失败：...`）；
 3. 非提权运行时若 reg 写入失败，回执 `ok=false, message="需要 SYSTEM/管理员方式运行客户端"`。
 
@@ -118,6 +124,7 @@
 | M2-6 | **改网络设置不断连**（核心场景） | 在 Guacamole 会话内把目标机 IP 改为静态另一地址 → 应用后**会话保持存活**（内网路径不受影响），稍后按新 IP 重新连入成功 |
 | M2-7 | 会话收尾 | 关闭标签页后 Guacamole 会话结束；wold 不残留连接对象（重启 wold 无影响） |
 | M2-8 | disable_rdp | 下发后 3389 停止监听，卡片 chip 变"未启用"，rdp-session 拒绝 |
+| M2-8b | 空密码安全降级可逆 | 未勾选 → `LimitBlankPasswordUse` 不变；勾选后 → 变 0 且页面出现「空密码登录已放开」；关闭 RDP → 按原值恢复（原值 1→1、原值 0→仍 0、键缺失→删除）；重复启用不叠加降级 |
 | M2-9 | 容器回归 | 原 wold 容器功能不受影响：`deploy/verify-e7.sh` 全绿 + `smoke.sh` 9 项通过 |
 | M2-10 | 安全 | Guacamole 管理口令非默认；票据/连接参数不出现在 wold 日志明文中；guac/guacd 端口无公网映射（`docker ps` 核对） |
 

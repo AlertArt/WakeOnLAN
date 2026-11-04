@@ -202,3 +202,62 @@ CREATE TABLE device (
 		t.Fatalf("迁移后 MarkOnline() error = %v", err)
 	}
 }
+
+// 空密码策略的写入必须能精确还原：allowed=false 时原值要一起清掉。
+// 保留旧快照会在下一次关闭 RDP 时把用户后来的设置覆盖掉。
+func TestSetRDPBlankPolicy(t *testing.T) {
+	db := newMigratedDB(t)
+	ctx := context.Background()
+
+	dv, err := db.CreateDevice(ctx, sampleDevice("AA:BB:CC:DD:EE:31"))
+	if err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	// 默认没动过：allowed=false、原值为空。
+	st := getStatus(t, db, dv.ID)
+	if st.RDPBlankAllowed || st.RDPBlankBefore != "" {
+		t.Fatalf("新设备默认 = allowed:%v before:%q，应为 false/空", st.RDPBlankAllowed, st.RDPBlankBefore)
+	}
+
+	if err := db.SetRDPBlankPolicy(ctx, dv.ID, true, "1"); err != nil {
+		t.Fatalf("SetRDPBlankPolicy(true) error = %v", err)
+	}
+	st = getStatus(t, db, dv.ID)
+	if !st.RDPBlankAllowed || st.RDPBlankBefore != "1" {
+		t.Fatalf("放行后 = allowed:%v before:%q", st.RDPBlankAllowed, st.RDPBlankBefore)
+	}
+
+	// 关闭时即便传了原值也要清空：我们不再持有这条策略。
+	if err := db.SetRDPBlankPolicy(ctx, dv.ID, false, "1"); err != nil {
+		t.Fatalf("SetRDPBlankPolicy(false) error = %v", err)
+	}
+	st = getStatus(t, db, dv.ID)
+	if st.RDPBlankAllowed || st.RDPBlankBefore != "" {
+		t.Fatalf("恢复后 = allowed:%v before:%q，应清空", st.RDPBlankAllowed, st.RDPBlankBefore)
+	}
+
+	if err := db.SetRDPBlankPolicy(ctx, 99999, true, "1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的设备 error = %v, want ErrNotFound", err)
+	}
+}
+
+// 老库迁移后两个新列要有安全的默认值；重复迁移不报错（服务每次启动都会跑）。
+func TestMigrateBlankPolicyDefaultsAndIdempotent(t *testing.T) {
+	db := newMigratedDB(t)
+	ctx := context.Background()
+
+	dv, err := db.CreateDevice(ctx, sampleDevice("AA:BB:CC:DD:EE:32"))
+	if err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatalf("第二次 Migrate() error = %v", err)
+	}
+
+	st := getStatus(t, db, dv.ID)
+	if st.RDPBlankAllowed || st.RDPBlankBefore != "" {
+		t.Fatalf("迁移默认值 = allowed:%v before:%q", st.RDPBlankAllowed, st.RDPBlankBefore)
+	}
+}

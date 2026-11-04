@@ -59,6 +59,8 @@
     confirm: document.getElementById('confirm'),
     confirmTitle: document.getElementById('confirm-title'),
     confirmText: document.getElementById('confirm-text'),
+    confirmExtra: document.getElementById('confirm-extra'),
+    confirmBlank: document.getElementById('confirm-blank'),
     confirmOk: document.getElementById('confirm-ok'),
     confirmCancel: document.getElementById('confirm-cancel'),
   };
@@ -159,6 +161,21 @@
     return node;
   }
 
+  // 安全降级必须长期可见：否则用户开了 RDP 再没关、或者把客户端卸了，
+  // 这条放宽就一直留在机器上，谁也不知道。放在 RDP chip 旁边，不藏进日志。
+  function blankChip(status) {
+    if (!status || !status.rdp_blank_allowed) return null;
+    var before = status.rdp_blank_before;
+    var origin = before === 'absent' ? '原本没有这个策略值' :
+      before === '0' ? '原本就是放开的' : '原本为 1，即 Windows 默认限制';
+    var node = el('span', 'chip chip--warn chip--rdp-blank');
+    node.appendChild(el('span', 'dot'));
+    node.appendChild(el('span', null, '空密码登录已放开'));
+    node.title = '「空密码账户禁止网络登录」已被尝试放开（' + origin + '）。' +
+      '该策略作用于这台机的所有网络登录，不只是远程桌面。关闭远程桌面时会按原值恢复。';
+    return node;
+  }
+
   function askRdp(id) {
     var dv = findDevice(id);
     if (!dv) return;
@@ -172,6 +189,8 @@
     var on = Boolean(status.rdp_enabled);
     state.rdpRequest = { id: id, enable: !on };
     state.confirmMode = on ? 'rdp' : 'rdp-toggle';
+    // 只有"启用"才谈得上授权放开空密码登录；其它场景一律隐藏，避免误勾。
+    showBlankOption(false);
 
     if (on) {
       dom.confirmTitle.textContent = '打开远程桌面';
@@ -181,8 +200,11 @@
     } else {
       dom.confirmTitle.textContent = '启用远程桌面';
       dom.confirmText.textContent = '将向「' + dv.name + '」下发启用指令：客户端会打开 RDP 开关、' +
-        '按规则名放行防火墙并启用 NLA。客户端需以管理员身份运行，否则会失败并回执原因。';
+        '按规则名放行防火墙并关闭 NLA（凭据在 Windows 登录界面输入）。' +
+        '客户端需以管理员身份运行，否则会失败并回执原因。';
       dom.confirmOk.textContent = '下发指令';
+      // 已经放开过的机器不再重复提供勾选，避免用户以为要再授权一次。
+      if (!status.rdp_blank_allowed) showBlankOption(true);
     }
     dom.confirm.showModal();
   }
@@ -217,15 +239,24 @@
     }
   }
 
+  function showBlankOption(show) {
+    if (!dom.confirmExtra || !dom.confirmBlank) return;
+    dom.confirmBlank.checked = false;
+    dom.confirmExtra.hidden = !show;
+  }
+
   async function doRdpToggle() {
     var req = state.rdpRequest;
     if (!req) return;
 
     dom.confirmOk.disabled = true;
     try {
-      var cmd = await request('POST', '/api/devices/' + req.id + '/commands', {
-        type: req.enable ? 'enable_rdp' : 'disable_rdp',
-      });
+      var body = { type: req.enable ? 'enable_rdp' : 'disable_rdp' };
+      // 只有用户亲手勾了才发：默认 false，服务端也拒绝把它用在其它指令上。
+      if (req.enable && dom.confirmBlank && dom.confirmBlank.checked) {
+        body.allow_blank_password = true;
+      }
+      var cmd = await request('POST', '/api/devices/' + req.id + '/commands', body);
       dom.confirm.close();
       state.commands.set(req.id, cmd);
       state.commandWatch.set(req.id, Date.now() + COMMAND_WAIT_MS);
@@ -252,9 +283,13 @@
 
     state.rdpRequest = { id: id, enable: false };
     state.confirmMode = 'rdp-toggle';
+    showBlankOption(false);
     dom.confirmTitle.textContent = '关闭远程桌面';
+    var extra = status.rdp_blank_allowed
+      ? '同时会把「空密码网络登录」按原值恢复（这是之前启用时放开的安全策略）。'
+      : '';
     dom.confirmText.textContent = '将向「' + dv.name + '」下发关闭指令：3389 会停止监听，' +
-      '已经打开的会话不受影响。之后需要重新启用才能再用远程桌面。';
+      '已经打开的会话不受影响。之后需要重新启用才能再用远程桌面。' + extra;
     dom.confirmOk.textContent = '确认关闭';
     dom.confirm.showModal();
   }
@@ -353,7 +388,11 @@
     head.appendChild(el('h2', 'card-title', dv.name));
     head.appendChild(chip(phase, status, dv));
     // 远程桌面状态只对心跳设备有意义：其它校验方式没有下发通道，也就打不开 RDP。
-    if (dv.probe_type === 'heartbeat') head.appendChild(rdpChip(status));
+    if (dv.probe_type === 'heartbeat') {
+      head.appendChild(rdpChip(status));
+      var blank = blankChip(status);
+      if (blank) head.appendChild(blank);
+    }
     node.appendChild(head);
 
     var facts = el('div', 'facts');

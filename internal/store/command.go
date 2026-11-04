@@ -54,15 +54,18 @@ type Command struct {
 	Force        bool
 	Status       string
 	Message      string
-	CreatedAt    time.Time
-	DeliveredAt  time.Time
-	FinishedAt   time.Time
-	ExpiresAt    time.Time
-	DeviceName   string
+	// AllowBlankPassword 只对 enable_rdp 有意义：用户是否显式授权
+	// 放开「空密码账户禁止网络登录」这条安全策略。默认 false。
+	AllowBlankPassword bool
+	CreatedAt          time.Time
+	DeliveredAt        time.Time
+	FinishedAt         time.Time
+	ExpiresAt          time.Time
+	DeviceName         string
 }
 
 const commandColumns = `id, device_id, type, delay_seconds, force, status, message,
-	created_at, delivered_at, finished_at, expires_at`
+	allow_blank_password, created_at, delivered_at, finished_at, expires_at`
 
 // CreateCommand 写入一条待下发的指令。
 // 同一设备只允许一条 pending/delivered 指令，否则关机和重启会互相覆盖。
@@ -89,10 +92,12 @@ func (d *DB) CreateCommand(ctx context.Context, cmd Command) (Command, error) {
 	cmd.ExpiresAt = now.Add(CommandTTL)
 
 	res, err := d.sql.ExecContext(ctx,
-		`INSERT INTO device_command (device_id, type, delay_seconds, force, status, message, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, '', ?, ?)`,
+		`INSERT INTO device_command (device_id, type, delay_seconds, force, status, message,
+		                             allow_blank_password, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)`,
 		cmd.DeviceID, cmd.Type, cmd.DelaySeconds, boolToInt(cmd.Force),
-		cmd.Status, formatTimeUTC(cmd.CreatedAt), formatTimeUTC(cmd.ExpiresAt),
+		cmd.Status, boolToInt(cmd.AllowBlankPassword),
+		formatTimeUTC(cmd.CreatedAt), formatTimeUTC(cmd.ExpiresAt),
 	)
 	if err != nil {
 		return Command{}, fmt.Errorf("写入指令失败: %w", err)
@@ -201,7 +206,7 @@ func (d *DB) ListCommands(ctx context.Context, deviceID int64, limit int) ([]Com
 func (d *DB) ListAllCommands(ctx context.Context, limit int) ([]Command, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT c.id, c.device_id, c.type, c.delay_seconds, c.force, c.status, c.message,
-		        c.created_at, c.delivered_at, c.finished_at, c.expires_at, dv.name
+		        c.allow_blank_password, c.created_at, c.delivered_at, c.finished_at, c.expires_at, dv.name
 		   FROM device_command c LEFT JOIN device dv ON dv.id = c.device_id
 		  ORDER BY c.id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -212,16 +217,17 @@ func (d *DB) ListAllCommands(ctx context.Context, limit int) ([]Command, error) 
 	for rows.Next() {
 		var (
 			cmd                          Command
-			force                        int
+			force, allowBlank            int
 			message, delivered, finished string
 			createdAt, expiresAt         string
 		)
 		if err := rows.Scan(&cmd.ID, &cmd.DeviceID, &cmd.Type, &cmd.DelaySeconds, &force,
-			&cmd.Status, &message, &createdAt, &delivered, &finished, &expiresAt, &cmd.DeviceName); err != nil {
+			&cmd.Status, &message, &allowBlank, &createdAt, &delivered, &finished, &expiresAt,
+			&cmd.DeviceName); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("读取指令记录失败: %w", err)
 		}
-		applyCommandTimes(&cmd, force, message, createdAt, delivered, finished, expiresAt)
+		applyCommandTimes(&cmd, force, allowBlank, message, createdAt, delivered, finished, expiresAt)
 		list = append(list, cmd)
 	}
 	if err := rows.Err(); err != nil {
@@ -271,15 +277,15 @@ func (d *DB) expireStale(ctx context.Context, now time.Time) error {
 func scanCommand(rows scanner) (Command, error) {
 	var (
 		cmd                          Command
-		force                        int
+		force, allowBlank            int
 		message, delivered, finished string
 		createdAt, expiresAt         string
 	)
 	if err := rows.Scan(&cmd.ID, &cmd.DeviceID, &cmd.Type, &cmd.DelaySeconds, &force,
-		&cmd.Status, &message, &createdAt, &delivered, &finished, &expiresAt); err != nil {
+		&cmd.Status, &message, &allowBlank, &createdAt, &delivered, &finished, &expiresAt); err != nil {
 		return Command{}, fmt.Errorf("读取指令记录失败: %w", err)
 	}
-	applyCommandTimes(&cmd, force, message, createdAt, delivered, finished, expiresAt)
+	applyCommandTimes(&cmd, force, allowBlank, message, createdAt, delivered, finished, expiresAt)
 	return cmd, nil
 }
 
@@ -301,8 +307,9 @@ func scanCommands(rows *sql.Rows) ([]Command, error) {
 }
 
 // applyCommandTimes 把库里的字符串时间转回 time.Time，空串表示"尚未发生"。
-func applyCommandTimes(cmd *Command, force int, message, createdAt, delivered, finished, expiresAt string) {
+func applyCommandTimes(cmd *Command, force, allowBlank int, message, createdAt, delivered, finished, expiresAt string) {
 	cmd.Force = force != 0
+	cmd.AllowBlankPassword = allowBlank != 0
 	cmd.Message = message
 	cmd.CreatedAt, _ = parseTime(createdAt)
 	cmd.DeliveredAt, _ = parseTime(delivered)

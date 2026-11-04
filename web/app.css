@@ -508,6 +508,35 @@ h2 {
   border-radius: 9px;
 }
 
+/* 确认框里的可选动作（安全降级开关）：默认不勾，样式上要和正文有区分，
+   避免用户顺手一路点"确定"就把策略改了。 */
+.check {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 0 0 4px;
+  padding: 11px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #f7f8fa;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.check[hidden] {
+  display: none;
+}
+
+.check input {
+  margin: 2px 0 0;
+  flex: 0 0 auto;
+}
+
+.check .hint {
+  margin-top: 4px;
+}
+
 /* ---------- 弹层 ---------- */
 
 dialog {

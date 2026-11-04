@@ -16,18 +16,21 @@ go test ./internal/... ./cmd/... → 全绿：
     wol/internal/guac      16 项（载荷往返、换密钥解不开、篡改被 HMAC 拦、
                                   URL 转义且参数不进 RawQuery、ParseConfig 校验、
                                   票据一次性/过期/未知 ID/签发时清理）
-    wol/internal/httpapi  105 项（rdp-session 的 4 类拒绝：非心跳 400/离线 409/
+    wol/internal/httpapi  110 项（rdp-session 的 4 类拒绝：非心跳 400/离线 409/
                                   未启用 409/未配置 503/无 IP 409；302 跳转与
                                   no-store；二次使用 410；日志票据占位符；
-                                  RDP 指令落库不带 delay；心跳回执更新/不猜 RDP 状态）
-    wol/internal/store     31 项（含 rdp_enabled 迁移与 SetRDPEnabled）
+                                  RDP 指令落库不带 delay；心跳回执更新/不猜 RDP 状态；
+                                  空密码授权参数校验/下发/回执/非法原值拒绝）
+    wol/internal/store     33 项（含 rdp_enabled / rdp_blank_* 迁移与写入）
     其余包（auth/config/probe/wol）全部通过
 dotnet build（客户端）→ 0 警告 0 错误
 ```
 
-客户端 UI 链路另有 41 项浏览器自动化（`tmp/m2-ui.mjs`，临时脚本不入库）：chip 两种状态与样式、
+客户端 UI 链路另有 47 项浏览器自动化（`tmp/m2-ui.mjs`，临时脚本不入库）：chip 两种状态与样式、
 「启用远程桌面/远程桌面/关闭 RDP」按钮随状态切换、三段确认弹窗文案、指令落库、回执翻转、
-票据 URL 形状、302 跳转、二次使用 410、失败回执不改状态——全部 PASS。
+票据 URL 形状、302 跳转、二次使用 410、失败回执不改状态，
+以及空密码安全降级的完整闭环（选项默认不勾 → 勾选后参数下发 → 回执写入原值 →
+卡片出现警示 chip → 关闭指令带回原值 → 恢复后状态清空）——全部 PASS。
 
 ## M2-2 指令真机下发 ✅链路 / 👤真机落锤
 
@@ -87,6 +90,34 @@ Guacamole 走的是 guacd → 目标机 3389 的既有 TCP 连接）→ 稍后�
 
 👤 真机步骤：下发关闭指令后，目标机 `reg query fDenyTSConnections` 应为 `0x1`，
 `netstat -an | findstr :3389` 无 LISTENING；已打开的会话不受影响（按设计保留）。
+
+## M2-8b 空密码安全降级 ✅链路 / 👤真机落锤
+
+Windows 默认 `LimitBlankPasswordUse=1`：**空密码账户不允许任何网络登录**（SMB/IPC$/远程桌面都算），
+且没有"只对 RDP 放开"的开关。因此这个动作不跟随 RDP 开关自动执行，而是做成显式、可逆、可见的降级项。
+
+自动化已验证（新增 6 个用例）：
+
+| 用例 | 断言 |
+| --- | --- |
+| `TestCreateRDPCommandBlankPassword` | 仅 `enable_rdp` 接受该参数并落库；省略即 false；用在 `disable_rdp` 上返回 400 |
+| `TestHeartbeatDeliversBlankPasswordFlag` | 授权时随心跳下发 `allow_blank_password:true`；未授权时该键完全不出现在报文里 |
+| `TestHeartbeatAckUpdatesBlankPolicy` | 回执 `allowed=true, before="1"` 写入设备状态；关闭回执 `allowed=false` 同时清空原值快照 |
+| `TestHeartbeatAckRejectsInvalidBlankBefore` | 非白名单原值（如带 shell 片段）不落库，避免被回写进注册表 |
+| `TestSetRDPBlankPolicy` | 存储层三态：未动过 / 已放开（带原值）/ 恢复后清空；设备不存在返回 `ErrNotFound` |
+| `TestMigrateBlankPolicyDefaultsAndIdempotent` | 老库补列默认安全值，重复迁移不报错 |
+
+👤 真机验收（四条可逆性，缺一不可）：
+
+1. **未勾选**：点「启用远程桌面」不勾安全降级 → 目标机 `LimitBlankPasswordUse` 保持 `0x1`；
+2. **勾选**：再点一次并勾选 → 变 `0x0`，卡片出现「空密码登录已放开」标签；
+   若账户有密码，回执会带"未检测到空密码本地账户"提示（仅提示，不阻止）；
+3. **恢复**：点「关闭 RDP」→ 策略按原值恢复（原值 `1` → 回 `1`；原本是 `0` → 仍是 `0`；
+   原本没有该键 → 键被删除），页面标签消失；
+4. **不越权**：在一台原本 `LimitBlankPasswordUse=0` 的机器上走完启用/关闭，
+   值必须始终为 `0`（不能因为关闭而写成 `1`）。
+
+核验命令：`reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse`
 
 ## M2-9 容器回归 ✅
 

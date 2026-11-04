@@ -43,11 +43,16 @@ const (
 	commandLimitMax = 100
 )
 
-// commandRequest 是下发请求体。delay_seconds 与 force 可省略。
+// commandRequest 是下发请求体。delay_seconds、force 与 allow_blank_password 可省略。
+//
+// allow_blank_password 是 M2 补充的安全降级开关，只对 enable_rdp 有效：
+// 用户显式勾选后才放开「空密码账户禁止网络登录」。默认 false，
+// 老客户端不认识这个键，会当作 false 处理，天然向后兼容。
 type commandRequest struct {
-	Type         string `json:"type"`
-	DelaySeconds *int   `json:"delay_seconds"`
-	Force        *bool  `json:"force"`
+	Type               string `json:"type"`
+	DelaySeconds       *int   `json:"delay_seconds"`
+	Force              *bool  `json:"force"`
+	AllowBlankPassword *bool  `json:"allow_blank_password"`
 }
 
 // commandResponse 是指令的资源形状。时间字段为空串时前端按"未发生"处理。
@@ -59,27 +64,30 @@ type commandResponse struct {
 	Force        bool   `json:"force"`
 	Status       string `json:"status"`
 	Message      string `json:"message"`
-	CreatedAt    string `json:"created_at"`
-	DeliveredAt  string `json:"delivered_at"`
-	FinishedAt   string `json:"finished_at"`
-	ExpiresAt    string `json:"expires_at"`
-	DeviceName   string `json:"device_name,omitempty"`
+	// AllowBlankPassword 恒存在：前端据此判断这条指令是否做过安全降级。
+	AllowBlankPassword bool   `json:"allow_blank_password"`
+	CreatedAt          string `json:"created_at"`
+	DeliveredAt        string `json:"delivered_at"`
+	FinishedAt         string `json:"finished_at"`
+	ExpiresAt          string `json:"expires_at"`
+	DeviceName         string `json:"device_name,omitempty"`
 }
 
 func toCommandResponse(cmd store.Command) commandResponse {
 	return commandResponse{
-		ID:           cmd.ID,
-		DeviceID:     cmd.DeviceID,
-		Type:         cmd.Type,
-		DelaySeconds: cmd.DelaySeconds,
-		Force:        cmd.Force,
-		Status:       cmd.Status,
-		Message:      cmd.Message,
-		CreatedAt:    formatOptionalTime(cmd.CreatedAt),
-		DeliveredAt:  formatOptionalTime(cmd.DeliveredAt),
-		FinishedAt:   formatOptionalTime(cmd.FinishedAt),
-		ExpiresAt:    formatOptionalTime(cmd.ExpiresAt),
-		DeviceName:   cmd.DeviceName,
+		ID:                 cmd.ID,
+		DeviceID:           cmd.DeviceID,
+		Type:               cmd.Type,
+		DelaySeconds:       cmd.DelaySeconds,
+		Force:              cmd.Force,
+		Status:             cmd.Status,
+		Message:            cmd.Message,
+		AllowBlankPassword: cmd.AllowBlankPassword,
+		CreatedAt:          formatOptionalTime(cmd.CreatedAt),
+		DeliveredAt:        formatOptionalTime(cmd.DeliveredAt),
+		FinishedAt:         formatOptionalTime(cmd.FinishedAt),
+		ExpiresAt:          formatOptionalTime(cmd.ExpiresAt),
+		DeviceName:         cmd.DeviceName,
 	}
 }
 
@@ -114,6 +122,7 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 	// 传了也忽略并写 0，免得日志里出现一个没人使用的延时。
 	delay := 0
 	force := false
+	allowBlank := false
 	if store.NeedsDelay(req.Type) {
 		delay = 60
 		if req.DelaySeconds != nil {
@@ -124,6 +133,17 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		force = req.Force != nil && *req.Force
+	}
+
+	// 空密码放行只对"启用远程桌面"有意义，其它类型带了也拒绝：
+	// 静默忽略会让调用方以为自己授权生效了，而这个开关是安全降级，不能含糊。
+	if req.AllowBlankPassword != nil && *req.AllowBlankPassword {
+		if req.Type != store.CommandEnableRDP {
+			writeError(w, http.StatusBadRequest, "invalid_command",
+				"allow_blank_password 只能与 enable_rdp 一起使用")
+			return
+		}
+		allowBlank = true
 	}
 
 	dv, err := s.devices.GetDevice(r.Context(), id)
@@ -152,10 +172,11 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cmd, err := s.commands.CreateCommand(r.Context(), store.Command{
-		DeviceID:     id,
-		Type:         req.Type,
-		DelaySeconds: delay,
-		Force:        force,
+		DeviceID:           id,
+		Type:               req.Type,
+		DelaySeconds:       delay,
+		Force:              force,
+		AllowBlankPassword: allowBlank,
 	})
 	switch {
 	case errors.Is(err, store.ErrCommandPending):
@@ -167,7 +188,8 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("已下发指令", "device_id", id, "command", cmd.Type, "delay", delay, "command_id", cmd.ID)
+	s.logger.Info("已下发指令", "device_id", id, "command", cmd.Type, "delay", delay,
+		"allow_blank_password", allowBlank, "command_id", cmd.ID)
 	writeJSON(w, http.StatusCreated, toCommandResponse(cmd))
 }
 

@@ -427,3 +427,170 @@ func TestHeartbeatAckDoesNotGuessRDPState(t *testing.T) {
 		t.Fatalf("非 RDP 指令不应更新 RDP 状态：%v", status.rdp)
 	}
 }
+
+// 空密码放行是显式授权：只有 enable_rdp 能带这个开关，其它指令带上必须报错，
+// 不能静默忽略——用户会以为自己授权生效了，而这个开关是安全降级。
+func TestCreateRDPCommandBlankPassword(t *testing.T) {
+	h, commands, _ := newCommandTestServer(t)
+
+	rec := postCommand(h, "/api/devices/1/commands",
+		`{"type":"enable_rdp","allow_blank_password":true}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201，body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp commandResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if !resp.AllowBlankPassword {
+		t.Fatalf("响应未回显 allow_blank_password：%+v", resp)
+	}
+	if !commands.items[0].AllowBlankPassword {
+		t.Fatalf("落库未记录授权：%+v", commands.items[0])
+	}
+
+	// 默认不授权：省略即 false。
+	h2, commands2, _ := newCommandTestServer(t)
+	if rec := postCommand(h2, "/api/devices/1/commands", `{"type":"enable_rdp"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d，body = %s", rec.Code, rec.Body.String())
+	}
+	if commands2.items[0].AllowBlankPassword {
+		t.Fatalf("未授权却落库为 true：%+v", commands2.items[0])
+	}
+
+	// 用在关闭指令上必须拒绝。
+	h3, _, _ := newCommandTestServer(t)
+	rec = postCommand(h3, "/api/devices/1/commands",
+		`{"type":"disable_rdp","allow_blank_password":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("disable_rdp + 授权 status = %d，want 400，body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 授权开关要随心跳下发到客户端，未授权时这个键不出现（老客户端也不受影响）。
+func TestHeartbeatDeliversBlankPasswordFlag(t *testing.T) {
+	h, _, status, commands := newHeartbeatServerWithCommands(t)
+	status.items = append(status.items, store.ProbeStatus{DeviceID: 1, ProbeType: "heartbeat"})
+
+	if _, err := commands.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandEnableRDP, AllowBlankPassword: true,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+
+	rec := postHeartbeat(h, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	var resp heartbeatResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析心跳响应失败: %v", err)
+	}
+	if len(resp.Commands) != 1 || !resp.Commands[0].AllowBlankPassword {
+		t.Fatalf("授权未随指令下发：%+v", resp.Commands)
+	}
+	if !strings.Contains(rec.Body.String(), `"allow_blank_password":true`) {
+		t.Fatalf("授权未编码进报文：%s", rec.Body.String())
+	}
+
+	// 未授权时省略该键：用原始 JSON 断言，避免结构体零值掩盖问题。
+	hUn, _, statusUn, commandsUn := newHeartbeatServerWithCommands(t)
+	statusUn.items = append(statusUn.items, store.ProbeStatus{DeviceID: 1, ProbeType: "heartbeat"})
+	if _, err := commandsUn.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandEnableRDP,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	recUn := postHeartbeat(hUn, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`)
+	if strings.Contains(recUn.Body.String(), "allow_blank_password") {
+		t.Fatalf("未授权不应下发 allow_blank_password：%s", recUn.Body.String())
+	}
+
+	// 关闭指令要带原值，客户端才能改回原样。
+	h2, _, status2, commands2 := newHeartbeatServerWithCommands(t)
+	status2.items = append(status2.items, store.ProbeStatus{
+		DeviceID: 1, ProbeType: "heartbeat", RDPBlankAllowed: true, RDPBlankBefore: "1",
+	})
+	if _, err := commands2.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandDisableRDP,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	rec = postHeartbeat(h2, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`)
+	var resp2 heartbeatResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("解析心跳响应失败: %v", err)
+	}
+	if len(resp2.Commands) != 1 || resp2.Commands[0].BlankPolicyBefore != "1" {
+		t.Fatalf("关闭指令未携带策略原值：%+v", resp2.Commands)
+	}
+}
+
+// 回执里的放行状态与原值要写进设备状态；恢复成功后清空原值。
+func TestHeartbeatAckUpdatesBlankPolicy(t *testing.T) {
+	h, _, status, commands := newHeartbeatServerWithCommands(t)
+	status.items = append(status.items, store.ProbeStatus{DeviceID: 1, ProbeType: "heartbeat"})
+
+	if _, err := commands.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandEnableRDP, AllowBlankPassword: true,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	if rec := postHeartbeat(h, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("取指令心跳 status = %d", rec.Code)
+	}
+
+	body := `{"mac":"AA:BB:CC:DD:EE:FF","secret":"` + testHeartbeatSecret +
+		`","acks":[{"id":1,"ok":true,"message":"已放开","rdp_enabled":true,` +
+		`"rdp_blank_allowed":true,"rdp_blank_before":"1"}]}`
+	if rec := postHeartbeat(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("回执心跳 status = %d，body = %s", rec.Code, rec.Body.String())
+	}
+	if !status.blankAllowed[1] || status.blankBefore[1] != "1" {
+		t.Fatalf("放行状态未写入：allowed=%v before=%q", status.blankAllowed, status.blankBefore)
+	}
+
+	// 关闭 RDP 的回执：allowed=false 必须同时清空原值，否则下次会拿旧快照覆盖用户的新设置。
+	if _, err := commands.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandDisableRDP,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	if rec := postHeartbeat(h, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("取指令心跳 status = %d", rec.Code)
+	}
+	body = `{"mac":"AA:BB:CC:DD:EE:FF","secret":"` + testHeartbeatSecret +
+		`","acks":[{"id":2,"ok":true,"message":"已恢复","rdp_enabled":false,"rdp_blank_allowed":false}]}`
+	if rec := postHeartbeat(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("回执心跳 status = %d，body = %s", rec.Code, rec.Body.String())
+	}
+	if status.blankAllowed[1] || status.blankBefore[1] != "" {
+		t.Fatalf("恢复后未清空：allowed=%v before=%q", status.blankAllowed, status.blankBefore)
+	}
+}
+
+// 非法原值不许落库：这个字符串最终会被回写给目标机注册表。
+func TestHeartbeatAckRejectsInvalidBlankBefore(t *testing.T) {
+	h, _, status, commands := newHeartbeatServerWithCommands(t)
+	status.items = append(status.items, store.ProbeStatus{DeviceID: 1, ProbeType: "heartbeat"})
+
+	if _, err := commands.CreateCommand(context.Background(), store.Command{
+		DeviceID: 1, Type: store.CommandEnableRDP, AllowBlankPassword: true,
+	}); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	if rec := postHeartbeat(h, `{"mac":"AA:BB:CC:DD:EE:FF","secret":"`+testHeartbeatSecret+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("取指令心跳 status = %d", rec.Code)
+	}
+
+	body := `{"mac":"AA:BB:CC:DD:EE:FF","secret":"` + testHeartbeatSecret +
+		`","acks":[{"id":1,"ok":true,"message":"x","rdp_blank_allowed":true,"rdp_blank_before":"1; rm -rf /"}]}`
+	if rec := postHeartbeat(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("回执心跳 status = %d", rec.Code)
+	}
+	if status.blankBefore[1] != "" {
+		t.Fatalf("非法原值被落库：%q", status.blankBefore[1])
+	}
+}
