@@ -192,18 +192,25 @@
     if (!req) return;
 
     dom.confirmOk.disabled = true;
+    // 必须在用户手势的**同步**上下文里开窗：一旦经过 await，浏览器就把
+    // window.open 当作非手势弹窗拦截。先开 about:blank 占位、拿到票据后再
+    // 导航，是绕开拦截的标准做法。也不能用 'noopener' 特性——按规范它会让
+    // window.open 返回 null，窗口其实开了，提示却永远报"被拦截"。
+    var win = window.open('about:blank', '_blank');
+    if (win) win.opener = null;
     try {
       var resp = await request('POST', '/api/devices/' + req.id + '/rdp-session');
       dom.confirm.close();
       // 票据一次性：先开窗口再提示，避免用户复制到已经失效的地址。
-      var win = window.open(resp.url, '_blank', 'noopener');
-      if (!win) {
-        notice('浏览器拦截了新标签页：请允许弹窗后重试（票据 ' + resp.expires_in + ' 秒内有效）', 'error');
+      if (!win || win.closed) {
+        notice('浏览器拦截了新标签页：请允许本站弹窗后重试（票据 ' + resp.expires_in + ' 秒内有效）', 'error');
       } else {
+        win.location.replace(resp.url);
         notice('已打开远程桌面，票据 ' + resp.expires_in + ' 秒内有效，过期请重新点击', 'ok');
       }
     } catch (err) {
       dom.confirm.close();
+      if (win) win.close(); // 请求失败时把刚开的空白页收掉
       notice(err.message, 'error');
     } finally {
       dom.confirmOk.disabled = false;

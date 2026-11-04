@@ -36,7 +36,7 @@ import (
 // 语义错误。上层据此给不同的提示，不解析错误字符串。
 var (
 	ErrNotConfigured = errors.New("未配置 Guacamole（WOL_GUAC_URL / WOL_GUAC_SECRET）")
-	ErrBadSecret     = errors.New("WOL_GUAC_SECRET 必须是 32 位十六进制（16 字节）")
+	ErrBadSecret     = errors.New("WOL_GUAC_SECRET 必须是恰好 32 个十六进制字符（0-9/a-f，即 128 位 = 16 字节的 AES 密钥）")
 )
 
 // DefaultTTL 是票据有效期。

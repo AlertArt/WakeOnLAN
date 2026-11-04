@@ -69,10 +69,12 @@
 
   function messageFor(code, data, status) {
     if (ERROR_TEXT[code]) return ERROR_TEXT[code];
-    // 字段级校验错误由服务端给出具体说明，直接透传，前端不另造一套文案。
-    if (status === 400 && data && data.message) return data.message;
-    if (status >= 500) return '服务暂时不可用，请稍后重试';
+    // 服务端给的 message 都是人工撰写、面向用户的（不含堆栈与内部细节），
+    // 一律优先透传：兜底文案会把可操作的原因盖掉——例如远程桌面返回的
+    // 503「未配置 Guacamole：请设置 WOL_GUAC_URL 与 WOL_GUAC_SECRET」，
+    // 一旦被替换成"服务暂时不可用"，用户就完全无从下手。
     if (data && data.message) return data.message;
+    if (status >= 500) return '服务暂时不可用，请稍后重试';
     return '操作未完成，请稍后重试';
   }
 

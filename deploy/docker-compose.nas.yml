@@ -69,20 +69,21 @@ services:
       GUACD_HOSTNAME: guacd
       # 只启用 JSON 认证：没有用户名/密码登录入口，唯一的进门方式是 wold 签发的票据。
       JSON_ENABLED: "true"
-      # 与 wold 共享的密钥。只需在这里配一次：
-      # 800-json-secret.sh 会在启动时把它写进 Guacamole 的配置目录。
+      # 与 wold 共享的密钥。Guacamole 1.6.0 会直接读取这个环境变量（已实测），
+      # 不需要往容器里挂任何配置文件；改过密钥后要 --force-recreate 重建本容器。
       JSON_SECRET_KEY: ${WOL_GUAC_SECRET:-}
 
     ports:
       # 默认只绑宿主 8088。对外访问请走 NAS 的反向代理并套 HTTPS，
       # 然后把 WOL_GUAC_URL 改成那个地址。
+      #
+      # 冒号左边可改（宿主端口）；右边 **必须保持 8080**——那是 Tomcat 的
+      # 监听端口，写死在镜像的 conf/server.xml 里，没有环境变量能改。
+      # 改成别的值会让容器正常起来但端口无人监听，浏览器表现为连不上。
       - "${WOL_GUAC_PORT:-8088}:8080"
 
-    volumes:
-      # 注意挂的是**单个文件**：整个目录挂上去会把镜像自带的入口脚本全盖掉。
-      - ./guac-init/800-json-secret.sh:/opt/guacamole/entrypoint.d/800-json-secret.sh:ro
-
     healthcheck:
+      # 这里探的是**容器内**端口，同样固定 8080，不要跟着 WOL_PORT 改。
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/guacamole/ || exit 1"]
       interval: 30s
       timeout: 5s

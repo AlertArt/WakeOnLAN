@@ -1,0 +1,87 @@
+# 极空间图形界面 Compose 专用编排。
+#
+# 与 docker-compose.nas.yml 的唯一差别：**不带 profiles**。
+# 极空间的 Compose 面板无法给命令追加 `--profile rdp`，带 profile 的服务永远不会
+# 启动——表现就是"只跑了一个 wold"。这份把三个服务都放进默认启动集合。
+#
+# 用法：极空间 → Docker → Compose → 新增项目 → 粘贴本文件 → 创建。
+#
+# 粘贴前必须改 5 处（都标了 ← 改这里）：
+#   1. WOL_ADMIN_PASSWORD  登录口令（沿用旧的）
+#   2. WOL_GUAC_URL        NAS 的 IP + 8088 + /guacamole，必须是浏览器能打开的地址
+#   3. WOL_GUAC_SECRET     32 位十六进制：openssl rand -hex 16
+#   4. JSON_SECRET_KEY     与 3 一字不差
+#   5. volumes 的宿主侧     旧数据所在位置，先看旧 wold 容器的挂载再填
+#
+# 创建前先删掉图形界面建的那个 wold 容器，否则 container_name 冲突。
+
+services:
+  wold:
+    image: wol:2.0.0-beta.2
+    container_name: wold
+
+    # host：WOL 是 UDP 广播，桥接网络下唤醒包发不出去（接口仍返回 202，很难发现）。
+    network_mode: host
+    restart: unless-stopped
+
+    environment:
+      - WOL_ADMIN_PASSWORD=CHANGE_ME                       # ← 改这里：换成你的登录口令
+      - WOL_PORT=9090
+      - WOL_DATA_DIR=/data
+      - WOL_LOG_LEVEL=info
+      - WOL_GUAC_URL=http://192.168.1.5:8088/guacamole    # ← 改这里（NAS 的 IP）
+      - WOL_GUAC_SECRET=CHANGE_ME_32HEX                    # ← 改这里：openssl rand -hex 16 的输出
+      - WOL_RDP_PORT=3389
+
+    volumes:
+      # 冒号左边是极空间上的实际路径，用「查询路径」复制后替换。
+      # 旧 wold 若用的是命名卷，这里就保持 wol-data:/data。
+      - wol-data:/data                                    # ← 确认这里
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9090/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # 协议代理：把 Guacamole 的指令翻成 RDP。不需要任何宿主端口。
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: guacd
+    restart: unless-stopped
+    networks: [guac]
+    # 屏幕数据走共享内存；给太小会画面撕裂或掉线。
+    shm_size: 256m
+
+  # 网页客户端：浏览器打开的就是它。
+  guacamole:
+    image: guacamole/guacamole:1.6.0
+    container_name: guacamole
+    restart: unless-stopped
+    depends_on: [guacd]
+    networks: [guac]
+
+    environment:
+      - GUACD_HOSTNAME=guacd
+      - JSON_ENABLED=true
+      # 与 wold 的 WOL_GUAC_SECRET 必须完全一致
+      - JSON_SECRET_KEY=CHANGE_ME_32HEX                     # ← 改这里：与上面一字不差
+
+    ports:
+      # 冒号右边固定 8080（镜像里 Tomcat 的端口，改不了），只能改左边。
+      - "8088:8080"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/guacamole/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+networks:
+  guac:
+    driver: bridge
+
+volumes:
+  wol-data:

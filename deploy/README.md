@@ -369,3 +369,5 @@ bash smoke.sh --host <NAS的IP> --password '<口令>' --rdp 3
 | 票据页直接 503 | wold 没配 `WOL_GUAC_URL`/`WOL_GUAC_SECRET`，或只配了一半（只配一半进程会拒绝启动） |
 | Guacamole 打开报 Permission Denied | 两边密钥不一致：`.env` 里的 `WOL_GUAC_SECRET` 改过之后要 `--profile rdp up -d --force-recreate` 重建 |
 | 端口 8088 冲突 | 改 `.env` 的 `WOL_GUAC_PORT`，同时 `WOL_GUAC_URL` 里的端口也要跟着改 |
+| 点「远程桌面」提示"服务不可用"，`curl http://<NAS>:8088/guacamole/` 连不上 | 先看 `docker ps` 有没有 guacamole。常见原因是把 `ports: "8088:8080"` 的**右边**也改成了自己的端口（如 9090）：右边是容器内 Tomcat 端口，写死在镜像里，只能改左边。容器内 8080 不会与宿主的 8080 冲突，两者是隔离的网络命名空间 |
+| guacamole 容器 `Up (unhealthy)` 但页面能开 | 探活依赖容器内 `curl http://127.0.0.1:8080/guacamole/`，容器内端口被改过就会一直 unhealthy；恢复成 8080 即可 |
