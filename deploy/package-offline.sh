@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="${VERSION:-2.0.0-beta.4}"
+VERSION="${VERSION:-2.0.0-beta.5}"
 ARCH="amd64"
 APT_MIRROR=""
 SKIP_BUILD=0

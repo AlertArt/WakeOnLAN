@@ -171,14 +171,35 @@ func (c Config) Encode(s Session) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
+// guacDataSource 是 guacamole-auth-json 这个认证扩展在 Guacamole 内部的标识，
+// 也就是连接所属的「数据源」名。它由扩展自己的 AuthenticationProvider 标识决定，
+// 与 guacamole.properties 无关，固定为 json。
+const guacDataSource = "json"
+
 // ClientURL 把 data 拼成 Guacamole 的**直连**地址。
 //
-// 路由用 #/client/<连接名> 而不是首页 #/：实测（1.6.0）auth-json 只做认证 +
-// 注入连接，落点是主页，还得手动点连接；带 client 路由时认证完立即发起连接。
-// data 放在 # 之后的查询串里：Guacamole 前端从 location 里取，不经过服务端日志。
-// 连接名做路径转义，中文名与特殊字符都安全。
+// 路由用 #/client/<标识> 而不是首页 #/：auth-json 只做认证 + 注入连接，
+// 落在首页还得手动点一下；带 client 路由时认证完立即发起会话。
+// data 放在 # 之后的查询串里：前端从 location 里取，不经过服务端日志。
+//
+// 路径里的「标识」不是连接名，而是 Guacamole 的 ClientIdentifier
+// （见 guacamole-client 的 app/navigation/types/ClientIdentifier.js）：
+//
+//	base64url( 连接标识 \0 类型 \0 数据源 )   // 类型 c = connection
+//
+// 只写连接名也能跑：前端解不出来时会退化成「连接名 + 当前登录用户的数据源」。
+// 但那是靠猜——路由解析早于认证完成时，前端还拿不到数据源，会退回 "default"，
+// 于是隧道创建按 "default" 去找连接，服务端返回 204，前端报
+// 「请求的连接不存在，请先检查连接的名字再重试」。所以这里必须写全三项。
 func (c Config) ClientURL(data, connName string) string {
-	return c.BaseURL + "/#/client/" + url.PathEscape(connName) + "?data=" + url.QueryEscape(data)
+	return c.BaseURL + "/#/client/" + clientIdentifier(connName) + "?data=" + url.QueryEscape(data)
+}
+
+// clientIdentifier 生成 Guacamole 的连接标识：base64url，去掉 = 填充。
+// base64url 的字符集（A-Za-z0-9-_）在路径段里不需要再转义。
+func clientIdentifier(connName string) string {
+	raw := connName + "\x00" + "c" + "\x00" + guacDataSource
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
 // pkcs7Pad 按块大小补齐。PKCS#5 与 PKCS#7 在 16 字节分组下是同一件事。

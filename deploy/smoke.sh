@@ -258,10 +258,13 @@ if [ -n "$RDP_ID" ]; then
         200)
             ok "已签发票据（${RDP_BODY}）"
             LOC="$("${CURL[@]}" -o /dev/null -w '%{redirect_url}' "$BASE$RDP_URL")"
-            if printf '%s' "$LOC" | grep -q '/#/?data='; then
-                ok "票据可兑换，跳转地址含 Guacamole 载荷"
+            # 直连路由：#/client/<连接标识>?data=<载荷>
+            # 标识必须是 base64url（Guacamole 的 ClientIdentifier），不能是裸连接名：
+            # 裸名会让前端去猜数据源，认证没完成时猜成 default，隧道创建报 204。
+            if printf '%s' "$LOC" | grep -qE '/#/client/[A-Za-z0-9_-]+\?data='; then
+                ok "票据可兑换，跳转地址是 Guacamole 直连路由（连接标识已编码）"
             else
-                bad "兑换后未跳转到 Guacamole：${LOC:-无 Location}"
+                bad "兑换后未跳转到 Guacamole 直连路由：${LOC:-无 Location}"
             fi
             AGAIN="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$BASE$RDP_URL")"
             if [ "$AGAIN" = "410" ]; then

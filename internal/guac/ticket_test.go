@@ -1,6 +1,7 @@
 package guac
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -120,7 +121,9 @@ func TestTamperedPayloadRejected(t *testing.T) {
 }
 
 // URL 里的 base64 必须转义：+ 会被当成空格，= 会截断查询串。
-// 路由必须指向 /client/<连接名>：auth-json 只做认证不自动连线，落点必须是直连路由。
+// 路由必须指向 /client/<标识>：auth-json 只做认证不自动连线，落点必须是直连路由。
+// 标识必须是 Guacamole 的 ClientIdentifier（base64url 的三段式），不能只写连接名，
+// 否则前端会按"当前登录用户的数据源"猜，认证没完成时猜成 default，隧道创建报 204。
 func TestClientURL(t *testing.T) {
 	cfg := testConfig(t)
 	got := cfg.ClientURL("ab+c/d==", "测试机")
@@ -128,8 +131,9 @@ func TestClientURL(t *testing.T) {
 	if !strings.HasPrefix(got, "https://nas.example.com/guacamole/#/client/") {
 		t.Fatalf("前缀不对（必须是直连路由）：%s", got)
 	}
-	if !strings.Contains(got, url.PathEscape("测试机")) {
-		t.Errorf("连接名未出现在路径里（需转义）：%s", got)
+	// 连接名经过 ClientIdentifier 编码后的固定值，写死用来锁住格式。
+	if !strings.Contains(got, "/#/client/5rWL6K-V5py6AGMAanNvbg?data=") {
+		t.Errorf("连接标识不是 Guacamole 的三段式编码：%s", got)
 	}
 	if strings.Contains(got, "ab+c/d==") {
 		t.Errorf("base64 未转义：%s", got)
@@ -144,6 +148,29 @@ func TestClientURL(t *testing.T) {
 	}
 	if !strings.Contains(got, "ab%2Bc%2Fd%3D%3D") {
 		t.Errorf("转义结果不符合预期：%s", got)
+	}
+}
+
+// 编码后的标识必须能还原成「连接名 + 类型 c + 数据源 json」三段，
+// 任何一段写错都会让 Guacamole 找不到连接。
+func TestClientIdentifierRoundTrip(t *testing.T) {
+	for _, name := range []string{"wol-1", "wol-42", "测试机", "a b/c"} {
+		id := clientIdentifier(name)
+		// base64url 不应出现需要额外转义的字符
+		if strings.ContainsAny(id, "+/=") {
+			t.Fatalf("%q 的标识不是 base64url：%s", name, id)
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(id)
+		if err != nil {
+			t.Fatalf("%q 的标识无法解码：%v", name, err)
+		}
+		parts := strings.Split(string(raw), "\x00")
+		if len(parts) != 3 {
+			t.Fatalf("%q 的标识不是三段式：%q", name, string(raw))
+		}
+		if parts[0] != name || parts[1] != "c" || parts[2] != guacDataSource {
+			t.Errorf("%q 的标识内容不对：%q", name, string(raw))
+		}
 	}
 }
 

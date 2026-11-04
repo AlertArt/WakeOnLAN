@@ -373,4 +373,5 @@ bash smoke.sh --host <NAS的IP> --password '<口令>' --rdp 3
 | guacamole 容器 `Up (unhealthy)` 但页面能开 | 探活依赖容器内 `curl http://127.0.0.1:8080/guacamole/`，容器内端口被改过就会一直 unhealthy；恢复成 8080 即可 |
 | 跳到 Guacamole 后页面空白或「全部连接」下没有连接 | 连接名含非 ASCII 字符（如中文设备名）会让 Guacamole 前端 `btoa` 抛异常、整页崩掉（浏览器控制台可见 `InvalidCharacterError`）。beta.3 起连接名固定为 `wol-<设备ID>`（纯 ASCII），升级服务端即可；不要手工把连接名改回设备名 |
 | 提示「远程桌面服务器拒绝了本连接」 | 两种可能：① 目标机还在跑旧客户端，NLA 开着而网关不传凭据——guacd 的凭据提示框 **15 秒就超时**（guacd 1.6.0 写死，不可配置），人工输口令必超时。用新客户端重新点一次「启用远程桌面」（把 NLA 关掉）即可；② guacd 到目标机 3389 网络不通，用 `Test-NetConnection <目标机IP> -Port 3389` 验证 |
+| 提示「请求的连接不存在，请先检查连接的名字再重试」 | 这是 Guacamole 前端 `CLIENT.ERROR_TUNNEL_204`：建隧道时服务端没在该数据源里找到这个连接。根因是跳转地址只写了连接名，前端只能猜连接属于哪个认证数据源（`ClientIdentifier.fromString` 的兜底分支）；页面解析早于认证完成时会猜成 `default`，于是按 `default` 找连接必然找不到。beta.5 起跳转地址写成完整的 Guacamole 连接标识 `base64url(连接名\0c\0json)`，不再依赖前端猜。升级服务端镜像即可，客户端不用动 |
 | 会话画面频繁断开（浏览器最小化后） | guacd 1.6.0 等待客户端消息的 15 秒超时在浏览器被节流时会误杀会话（GUACAMOLE-2233）；保持标签页前台使用，或等 guacd 升级后用 `CLIENT_TIMEOUT` 调大 |

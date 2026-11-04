@@ -52,7 +52,7 @@ dotnet build（客户端）→ 0 警告 0 错误
 
 - 单元测试：签发 60 秒后 `Consume` 返回 false；未知 ID 返回 false；取走即删。
 - 接口级（真实服务）：签发返回 `/rdp/<32位十六进制>` 与 `expires_in=60`；
-  首次访问 302 跳转 `<WOL_GUAC_URL>/#/?data=<载荷>` 且 `Cache-Control: no-store`；
+  首次访问 302 跳转 `<WOL_GUAC_URL>/#/client/<连接标识>?data=<载荷>`（标识为 `base64url(连接名\0c\0json)`）且 `Cache-Control: no-store`；
   同一票据二次访问 410；载荷只在 URL fragment 里，不进服务端访问日志（日志中路径为 `/rdp/<ticket>` 占位符）。
 
 👤 60 秒自然过期的人工复核：签发后等 61 秒再打开票据 URL，应看到"票据已失效"页。

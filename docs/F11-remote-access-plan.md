@@ -84,7 +84,7 @@
 3. Guacamole 集成（NAS 侧新增容器，wold 不内嵌流媒体）——**按 auth-json 方案落地**：
    - `deploy/docker-compose.nas.yml` 增加 `guacd` + `guacamole` 两个服务，加入独立内网 `guac`，guacd 无宿主端口，guacamole 默认只绑 `127.0.0.1` 可达的 8088；两容器放 `rdp` profile，不启用远程桌面则不启动；凭据经环境变量注入；
    - wold 新增 `internal/guac` 模块：用共享密钥（`WOL_GUAC_URL/WOL_GUAC_SECRET`）把 RDP 连接参数（hostname=心跳上报 IP，port 3389，NLA）签成 auth-json 载荷——`JSON → HMAC-SHA256（二进制签名前置）→ AES-128-CBC（全零 IV）→ base64`，算法与官方 `guacamole-auth-json` 一致；
-   - 接口：`POST /api/devices/{id}/rdp-session` → 校验（心跳设备/在线/rdp_enabled/已配置 guac/有 IP）→ 签发 32 位十六进制一次性票据（60 秒），返回 `{ "url": "/rdp/<ticket>", "expires_in": 60 }`；浏览器访问 `GET /rdp/{ticket}` 时才把票据兑换成 auth-json 载荷并 302 跳转到 `<WOL_GUAC_URL>/#/?data=<载荷>`（载荷在 fragment 里，不进任何服务端日志）；
+   - 接口：`POST /api/devices/{id}/rdp-session` → 校验（心跳设备/在线/rdp_enabled/已配置 guac/有 IP）→ 签发 32 位十六进制一次性票据（60 秒），返回 `{ "url": "/rdp/<ticket>", "expires_in": 60 }`；浏览器访问 `GET /rdp/{ticket}` 时才把票据兑换成 auth-json 载荷并 302 跳转到 `<WOL_GUAC_URL>/#/client/<连接标识>?data=<载荷>`（连接标识是 Guacamole 的 `base64url(连接名\0c\0json)`；载荷在 fragment 里，不进任何服务端日志）；
    - 未配置 Guacamole 环境变量时接口返回 503 与明确错误（功能降级但不出 500）；只配一半时进程拒绝启动；
    - 载荷生成、票据存储与兑换有单元/接口级测试；与真实 Guacamole 1.6.0 做过联调（合法载荷 200、过期载荷 403）。
 4. 心跳 metrics 已含 `ip`（M1），RDP connection 用它；IP 变化时下次创建自动更新。
