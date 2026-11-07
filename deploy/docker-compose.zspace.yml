@@ -29,7 +29,7 @@ services:
       - WOL_PORT=9090
       - WOL_DATA_DIR=/data
       - WOL_LOG_LEVEL=info
-      - WOL_GUAC_URL=http://192.168.1.5:8088/guacamole    # ← 改这里（NAS 的 IP）
+      - WOL_GUAC_URL=http://CHANGE_ME_NAS_IP:8088/guacamole  # ← 改这里（NAS 的 IP，浏览器要能打开）
       - WOL_GUAC_SECRET=CHANGE_ME_32HEX                    # ← 改这里：openssl rand -hex 16 的输出
       - WOL_RDP_PORT=3389
 
